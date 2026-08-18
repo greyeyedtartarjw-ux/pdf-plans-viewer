@@ -3,7 +3,7 @@ import * as fabric from 'fabric';
 import { useViewerContext } from '../store/ViewerContext';
 import { renderPageToCanvas } from '../lib/pdfUtils';
 import { initFabricCanvas, applyToolState, generateId } from '../lib/fabricUtils';
-import { calculateDistance, calculateArea, formatMeasurement } from '../lib/measurementUtils';
+import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints } from '../lib/measurementUtils';
 import { THEME } from '../lib/constants';
 import {
   createAnnotation,
@@ -50,21 +50,6 @@ export default function PDFPageViewer() {
     points.current = [];
     canvas.renderAll();
   }, []);
-
-  /**
-   * Deduplicate consecutive points that are within `tolerance` canvas pixels.
-   * This makes the double-click close logic robust regardless of how many
-   * duplicate mousedown events fire before the dblclick event.
-   */
-  const deduplicatePoints = useCallback(
-    (pts: { x: number; y: number }[], tolerance = 4): { x: number; y: number }[] =>
-      pts.filter((pt, i) => {
-        if (i === 0) return true;
-        const prev = pts[i - 1];
-        return Math.abs(pt.x - prev.x) > tolerance || Math.abs(pt.y - prev.y) > tolerance;
-      }),
-    []
-  );
 
   // 1. Render PDF Page
   useEffect(() => {

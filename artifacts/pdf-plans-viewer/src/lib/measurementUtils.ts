@@ -1,5 +1,20 @@
 import { Scale } from '../types';
 
+/**
+ * Deduplicate consecutive points that are within `tolerance` canvas pixels.
+ * This makes the double-click close logic robust regardless of how many
+ * duplicate mousedown events fire before the dblclick event.
+ */
+export const deduplicatePoints = (
+  pts: { x: number; y: number }[],
+  tolerance = 4,
+): { x: number; y: number }[] =>
+  pts.filter((pt, i) => {
+    if (i === 0) return true;
+    const prev = pts[i - 1];
+    return Math.abs(pt.x - prev.x) > tolerance || Math.abs(pt.y - prev.y) > tolerance;
+  });
+
 export const calculateDistance = (p1: { x: number; y: number }, p2: { x: number; y: number }): number => {
   return Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
 };
