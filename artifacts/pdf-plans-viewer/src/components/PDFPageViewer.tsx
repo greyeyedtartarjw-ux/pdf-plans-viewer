@@ -598,6 +598,28 @@ export default function PDFPageViewer() {
         return;
       }
 
+      // Backspace or Ctrl/Cmd+Z while drawing an area: undo the last placed point
+      if (
+        fCanvas &&
+        activeTool === 'measure-area' &&
+        isDrawing.current &&
+        (e.key === 'Backspace' || (e.key === 'z' && (e.ctrlKey || e.metaKey)))
+      ) {
+        e.preventDefault();
+        if (points.current.length <= 1) {
+          // Only the first point remains — cancel the whole shape
+          cancelAreaDrawing(fCanvas);
+        } else {
+          // Pop the last point and its corresponding segment line
+          points.current = points.current.slice(0, -1);
+          const lastSeg = areaPreviewLines.current.pop();
+          if (lastSeg) fCanvas.remove(lastSeg);
+          // The live-preview line will snap back on the next mouse:move automatically
+          fCanvas.renderAll();
+        }
+        return;
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (fCanvas && fCanvas.getActiveObject()) {
           const activeObj = fCanvas.getActiveObject();
