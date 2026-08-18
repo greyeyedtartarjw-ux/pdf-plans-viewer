@@ -11,10 +11,6 @@ interface ScrollInfo {
 }
 
 interface DragState {
-  startMouseX: number;
-  startMouseY: number;
-  startScrollLeft: number;
-  startScrollTop: number;
   rx: number;
   ry: number;
 }
@@ -137,29 +133,23 @@ export default function PageThumbnails() {
       const rect = computeViewportRect(imgEl);
       if (!rect) return;
 
-      dragRef.current = {
-        startMouseX: e.clientX,
-        startMouseY: e.clientY,
-        startScrollLeft: sc.scrollLeft,
-        startScrollTop: sc.scrollTop,
-        rx: rect.rx,
-        ry: rect.ry,
-      };
+      dragRef.current = { rx: rect.rx, ry: rect.ry };
 
       const onMove = (me: MouseEvent) => {
         const d = dragRef.current;
         if (!d) return;
-        const dx = (me.clientX - d.startMouseX) / d.rx;
-        const dy = (me.clientY - d.startMouseY) / d.ry;
-        sc.scrollLeft = d.startScrollLeft + dx;
-        sc.scrollTop = d.startScrollTop + dy;
+        sc.scrollLeft += me.movementX / d.rx;
+        sc.scrollTop  += me.movementY / d.ry;
       };
 
       const onUp = () => {
         dragRef.current = null;
+        document.body.style.cursor = '';
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
       };
+
+      document.body.style.cursor = 'grabbing';
 
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
