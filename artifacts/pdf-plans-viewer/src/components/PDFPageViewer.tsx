@@ -22,12 +22,49 @@ export default function PDFPageViewer() {
 
   const [fCanvas, setFCanvas] = useState<fabric.Canvas | null>(null);
   const [isRenderLoading, setIsRenderLoading] = useState(false);
+  const [areaHint, setAreaHint] = useState<string | null>(null);
+  const areaHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isDrawing = useRef(false);
   const points = useRef<{ x: number, y: number }[]>([]);
   const currentShape = useRef<fabric.Object | null>(null);
   const areaPreviewLines = useRef<fabric.Line[]>([]);
   const areaLivePreview = useRef<fabric.Line | null>(null);
+
+  /** Show a transient hint message to the user, auto-dismissed after 2.5 s. */
+  const showAreaHint = useCallback((msg: string) => {
+    setAreaHint(msg);
+    if (areaHintTimer.current) clearTimeout(areaHintTimer.current);
+    areaHintTimer.current = setTimeout(() => setAreaHint(null), 2500);
+  }, []);
+
+  /** Remove all area-drawing preview objects from the canvas and reset state. */
+  const cancelAreaDrawing = useCallback((canvas: fabric.Canvas) => {
+    areaPreviewLines.current.forEach(l => canvas.remove(l));
+    areaPreviewLines.current = [];
+    if (areaLivePreview.current) {
+      canvas.remove(areaLivePreview.current);
+      areaLivePreview.current = null;
+    }
+    isDrawing.current = false;
+    points.current = [];
+    canvas.renderAll();
+  }, []);
+
+  /**
+   * Deduplicate consecutive points that are within `tolerance` canvas pixels.
+   * This makes the double-click close logic robust regardless of how many
+   * duplicate mousedown events fire before the dblclick event.
+   */
+  const deduplicatePoints = useCallback(
+    (pts: { x: number; y: number }[], tolerance = 4): { x: number; y: number }[] =>
+      pts.filter((pt, i) => {
+        if (i === 0) return true;
+        const prev = pts[i - 1];
+        return Math.abs(pt.x - prev.x) > tolerance || Math.abs(pt.y - prev.y) > tolerance;
+      }),
+    []
+  );
 
   // 1. Render PDF Page
   useEffect(() => {
@@ -337,10 +374,15 @@ export default function PDFPageViewer() {
     const handleDblClick = (o: fabric.TEvent) => {
       if (activeTool !== 'measure-area' || !isDrawing.current) return;
 
-      // mousedown fires twice before dblclick, so the last point in the array
-      // is the duplicate from the second mousedown — remove it before closing.
-      const pts = points.current.slice(0, -1);
-      if (pts.length < 3) return;
+      // A dblclick fires two mousedown events at the (approximately) same position
+      // before the dblclick event itself. Deduplicate consecutive near-identical
+      // points so closing works correctly regardless of exact event timing or
+      // pointer behavior.
+      const pts = deduplicatePoints(points.current);
+      if (pts.length < 3) {
+        showAreaHint('Need at least 3 distinct points to measure an area — keep clicking to add more.');
+        return;
+      }
 
       // Clear all preview objects
       areaPreviewLines.current.forEach(l => fCanvas.remove(l));
@@ -427,11 +469,19 @@ export default function PDFPageViewer() {
       fCanvas.off('mouse:up', handleMouseUp);
       fCanvas.off('mouse:dblclick', handleDblClick);
     };
-  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId]);
+  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing]);
 
-  // 5. Delete key handler
+  // 5. Delete / Escape key handlers
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Escape cancels an in-progress area measurement
+      if (e.key === 'Escape') {
+        if (fCanvas && activeTool === 'measure-area' && isDrawing.current) {
+          cancelAreaDrawing(fCanvas);
+        }
+        return;
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (fCanvas && fCanvas.getActiveObject()) {
           const activeObj = fCanvas.getActiveObject();
@@ -453,7 +503,7 @@ export default function PDFPageViewer() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fCanvas, currentPage, dispatch, documentId]);
+  }, [fCanvas, activeTool, currentPage, dispatch, documentId, cancelAreaDrawing]);
 
   return (
     <div className="relative shadow-xl bg-white border border-border/50 select-none m-auto transition-transform origin-top-left" ref={containerRef}>
@@ -464,6 +514,13 @@ export default function PDFPageViewer() {
           <div className="bg-card px-4 py-2 rounded-md shadow-md flex items-center gap-2 border border-border">
             <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
             <span className="text-sm font-medium">Rendering page {currentPage}…</span>
+          </div>
+        </div>
+      )}
+      {areaHint && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
+          <div className="bg-card/95 border border-border text-foreground text-xs font-medium px-3 py-2 rounded-md shadow-lg backdrop-blur-sm">
+            {areaHint}
           </div>
         </div>
       )}
