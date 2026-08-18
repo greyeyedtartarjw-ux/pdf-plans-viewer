@@ -3,7 +3,7 @@ import * as fabric from 'fabric';
 import { useViewerContext } from '../store/ViewerContext';
 import { renderPageToCanvas } from '../lib/pdfUtils';
 import { initFabricCanvas, applyToolState, generateId } from '../lib/fabricUtils';
-import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints } from '../lib/measurementUtils';
+import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints, resolveSnapPoint } from '../lib/measurementUtils';
 import { THEME } from '../lib/constants';
 import {
   createAnnotation,
@@ -243,9 +243,15 @@ export default function PDFPageViewer() {
           isDrawing.current = true;
           points.current = [pointer];
         } else {
-          // Draw a segment from the previous point to this new point
+          // Resolve the effective point: snap to the first point when within
+          // the snap radius so the stored coordinate matches the visual preview.
+          const firstPt = points.current[0];
+          const snapThresholdPx = 12 / zoom;
+          const effectivePt = resolveSnapPoint(pointer, firstPt, snapThresholdPx, points.current.length);
+
+          // Draw a segment from the previous point to this new (effective) point
           const lastPt = points.current[points.current.length - 1];
-          const seg = new fabric.Line([lastPt.x, lastPt.y, pointer.x, pointer.y], {
+          const seg = new fabric.Line([lastPt.x, lastPt.y, effectivePt.x, effectivePt.y], {
             strokeWidth: 2 / zoom,
             stroke: THEME.colors.measurement.line,
             fill: THEME.colors.measurement.line,
@@ -254,7 +260,7 @@ export default function PDFPageViewer() {
           });
           areaPreviewLines.current.push(seg);
           fCanvas.add(seg);
-          points.current.push(pointer);
+          points.current.push(effectivePt);
           fCanvas.renderAll();
           // Polygon closed via double-click (handled in dblclick event)
         }
@@ -330,14 +336,12 @@ export default function PDFPageViewer() {
         line.set({ x2: pointer.x, y2: pointer.y });
         fCanvas.renderAll();
       } else if (activeTool === 'measure-area' && points.current.length > 0) {
-        // Snap detection: check if cursor is within 12 screen-px of the first point.
-        // Need ≥3 placed points so closing the polygon yields a valid area.
+        // Snap detection: use resolveSnapPoint (same logic as handleMouseDown)
+        // to determine whether the cursor is close enough to the first point.
         const firstPt = points.current[0];
         const snapThresholdPx = 12 / zoom; // convert screen px → scene units
-        const dx = pointer.x - firstPt.x;
-        const dy = pointer.y - firstPt.y;
-        const distToFirst = Math.sqrt(dx * dx + dy * dy);
-        const canSnap = points.current.length >= 3 && distToFirst <= snapThresholdPx;
+        const resolvedPt = resolveSnapPoint(pointer, firstPt, snapThresholdPx, points.current.length);
+        const canSnap = resolvedPt === firstPt; // identity check: snapped iff resolveSnapPoint returned firstPt
 
         // Add / remove snap ring around the first point
         if (canSnap) {
@@ -368,8 +372,8 @@ export default function PDFPageViewer() {
           fCanvas.setCursor('crosshair');
         }
 
-        // Live-preview dashed line: snap endpoint to first point when in range
-        const targetPt = canSnap ? firstPt : pointer;
+        // Live-preview dashed line: use the same resolved point as mousedown will use
+        const targetPt = resolvedPt;
         if (areaLivePreview.current) {
           fCanvas.remove(areaLivePreview.current);
         }

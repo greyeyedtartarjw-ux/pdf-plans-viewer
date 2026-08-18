@@ -1,6 +1,32 @@
 import { Scale } from '../types';
 
 /**
+ * Resolve the effective point for an area-polygon click.
+ *
+ * When the cursor is within `snapThresholdSceneUnits` of `firstPt` AND at
+ * least `minPointsForClose` points have already been placed, the raw pointer
+ * is snapped to `firstPt` exactly so the polygon closes cleanly.
+ *
+ * This pure function is the single source-of-truth for snap resolution; both
+ * the live-preview (handleMouseMove) and the click-accumulation
+ * (handleMouseDown) paths must call it so the stored coordinate matches the
+ * visual feedback.
+ */
+export const resolveSnapPoint = (
+  pointer: { x: number; y: number },
+  firstPt: { x: number; y: number },
+  snapThresholdSceneUnits: number,
+  placedPointCount: number,
+  minPointsForClose = 3,
+): { x: number; y: number } => {
+  if (placedPointCount < minPointsForClose) return pointer;
+  const dx = pointer.x - firstPt.x;
+  const dy = pointer.y - firstPt.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  return dist <= snapThresholdSceneUnits ? firstPt : pointer;
+};
+
+/**
  * Deduplicate consecutive points that are within `tolerance` canvas pixels.
  * This makes the double-click close logic robust regardless of how many
  * duplicate mousedown events fire before the dblclick event.

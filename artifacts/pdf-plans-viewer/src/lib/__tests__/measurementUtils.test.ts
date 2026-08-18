@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { deduplicatePoints, calculateArea, calculateDistance, formatMeasurement } from '../measurementUtils';
+import { deduplicatePoints, calculateArea, calculateDistance, formatMeasurement, resolveSnapPoint } from '../measurementUtils';
 
 // ---------------------------------------------------------------------------
 // deduplicatePoints
@@ -236,6 +236,194 @@ describe('formatMeasurement — no scale set', () => {
     const zeroScale = { set: true, pixelsPerUnit: 0, unit: 'px', realWorldUnit: 'm' };
     const result = formatMeasurement(50, zeroScale, false);
     expect(result.unit).toBe('px');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Snap → deduplicatePoints → calculateArea pipeline
+//
+// The area-drawing tool snaps the closing click to the first point when the
+// cursor is within the snap radius. A double-click fires two mousedown events,
+// so the raw `points` array typically contains one or two near-duplicate
+// closing entries. This suite tests the full pipeline:
+//   snap (coordinate adjustment) → deduplicatePoints → calculateArea
+// ---------------------------------------------------------------------------
+
+describe('resolveSnapPoint', () => {
+  const A = { x: 0, y: 0 };
+  const threshold = 12;
+  const minPts = 3; // default minPointsForClose
+
+  it('snaps to first point when within threshold and enough points placed', () => {
+    const ptr = { x: 3, y: 2 }; // ~3.6 px from A
+    expect(resolveSnapPoint(ptr, A, threshold, minPts)).toBe(A);
+  });
+
+  it('does NOT snap when distance exceeds threshold', () => {
+    const ptr = { x: 20, y: 0 }; // 20 px from A
+    expect(resolveSnapPoint(ptr, A, threshold, minPts)).toEqual(ptr);
+  });
+
+  it('does NOT snap when fewer than minPointsForClose points are placed', () => {
+    // Only 2 points placed — cannot close yet
+    const ptr = { x: 1, y: 1 }; // well within threshold
+    expect(resolveSnapPoint(ptr, A, threshold, 2)).toEqual(ptr);
+  });
+
+  it('snaps exactly on the threshold boundary', () => {
+    // Point exactly 12 px away should snap (≤ threshold)
+    const ptr = { x: 12, y: 0 };
+    expect(resolveSnapPoint(ptr, A, threshold, minPts)).toBe(A);
+  });
+
+  it('does not snap when one pixel beyond the threshold', () => {
+    const ptr = { x: 13, y: 0 };
+    expect(resolveSnapPoint(ptr, A, threshold, minPts)).toEqual(ptr);
+  });
+
+  it('respects a custom minPointsForClose', () => {
+    const ptr = { x: 2, y: 0 }; // within threshold
+    // With minPointsForClose=4 and only 3 placed, no snap
+    expect(resolveSnapPoint(ptr, A, threshold, 3, 4)).toEqual(ptr);
+    // With minPointsForClose=3 and 3 placed, snap fires
+    expect(resolveSnapPoint(ptr, A, threshold, 3, 3)).toBe(A);
+  });
+});
+
+describe('resolveSnapPoint → deduplicatePoints → calculateArea pipeline', () => {
+  // ── Context ───────────────────────────────────────────────────────────────
+  // PDFPageViewer appends points to `points.current` on every mousedown.
+  // A double-click fires two mousedown events at roughly the same position,
+  // so the array ends with 1-2 near-duplicate closing entries.
+  // resolveSnapPoint is called in handleMouseDown to replace those entries
+  // with the exact first-point coordinate when within the snap radius.
+  // Then handleDblClick runs deduplicatePoints → calculateArea.
+
+  it('snapped closing click (within radius) deduplicates cleanly for a triangle', () => {
+    const A = { x: 0, y: 0 };
+    const B = { x: 100, y: 0 };
+    const C = { x: 0, y: 100 };
+    const snapThreshold = 12;
+
+    // Raw closing click is 3 px from A — within snap radius; both dblclick
+    // mousedown events resolve to A via resolveSnapPoint.
+    const rawClose = { x: 3, y: 2 };
+    const resolved1 = resolveSnapPoint(rawClose, A, snapThreshold, 3 /* points so far: A,B,C */);
+    const resolved2 = resolveSnapPoint(rawClose, A, snapThreshold, 4 /* after first close appended */);
+
+    expect(resolved1).toBe(A);
+    expect(resolved2).toBe(A);
+
+    // Simulated points.current after both mousedown events
+    const rawPoints = [A, B, C, resolved1, resolved2];
+    const deduped = deduplicatePoints(rawPoints);
+
+    // Both trailing A entries collapse: result is [A, B, C, A] or [A, B, C]
+    expect(deduped.length).toBeGreaterThanOrEqual(3);
+    expect(calculateArea(deduped)).toBeCloseTo(5000, 1); // 0.5 × 100 × 100
+  });
+
+  it('snap rescues a closing click just outside dedup tolerance, keeping area correct', () => {
+    // Without snap: the closing click (5 px from A) is beyond the 4 px dedup
+    // tolerance and survives deduplication as a spurious 4th vertex, distorting
+    // the measured area.
+    // With snap: resolveSnapPoint pulls it to A, dedup removes the duplicate,
+    // and the area equals the ideal triangle.
+    const A = { x: 0, y: 0 };
+    const B = { x: 200, y: 0 };
+    const C = { x: 0, y: 200 };
+    const snapThreshold = 12;
+    const dedupTolerance = 4;
+
+    const rawClose = { x: 5, y: 0 }; // 5 px from A: inside snap, outside dedup
+
+    // ── Without snap ──
+    const rawNoSnap = [A, B, C, rawClose, rawClose];
+    const areaNoSnap = calculateArea(deduplicatePoints(rawNoSnap, dedupTolerance));
+
+    // ── With snap (production path) ──
+    const c1 = resolveSnapPoint(rawClose, A, snapThreshold, 3);
+    const c2 = resolveSnapPoint(rawClose, A, snapThreshold, 4);
+    const rawSnap = [A, B, C, c1, c2];
+    const areaSnap = calculateArea(deduplicatePoints(rawSnap, dedupTolerance));
+
+    expect(areaSnap).toBeCloseTo(20000, 1); // correct: 0.5 × 200 × 200
+    expect(Math.abs(areaNoSnap - areaSnap)).toBeGreaterThan(0); // snap changed the result
+  });
+
+  it('closing click outside snap radius is kept as a spurious vertex and corrupts area', () => {
+    // Documents the negative case: no snap fires, spurious vertex persists.
+    const A = { x: 0, y: 0 };
+    const B = { x: 100, y: 0 };
+    const C = { x: 0, y: 100 };
+    const snapThreshold = 12;
+
+    const rawClose = { x: 20, y: 0 }; // 20 px from A — beyond snap radius
+    const resolved = resolveSnapPoint(rawClose, A, snapThreshold, 3);
+
+    expect(resolved).toEqual(rawClose); // snap did NOT fire
+
+    const pts = [A, B, C, resolved];
+    expect(calculateArea(deduplicatePoints(pts))).not.toBeCloseTo(5000, 0);
+  });
+
+  it('multiple snapped closing events all collapse via deduplication (square)', () => {
+    // Even three rapid mousedown events at the same closing position all
+    // snap to A and are deduped down to one trailing entry.
+    const A = { x: 50, y: 50 };
+    const B = { x: 150, y: 50 };
+    const C = { x: 150, y: 150 };
+    const D = { x: 50, y: 150 };
+    const snapThreshold = 12;
+
+    const rawClose = { x: 51, y: 50 }; // 1 px from A
+    const c1 = resolveSnapPoint(rawClose, A, snapThreshold, 4);
+    const c2 = resolveSnapPoint(rawClose, A, snapThreshold, 5);
+    const c3 = resolveSnapPoint(rawClose, A, snapThreshold, 6);
+
+    expect(c1).toBe(A);
+
+    const rawPoints = [A, B, C, D, c1, c2, c3];
+    const deduped = deduplicatePoints(rawPoints);
+
+    // D=(50,150) → A=(50,50): dy=100 > 4, so trailing A is kept → 5 points
+    expect(deduped.length).toBe(5);
+    expect(calculateArea(deduped)).toBeCloseTo(10000, 1); // 100×100 square
+  });
+
+  it('snap threshold scales correctly with zoom', () => {
+    // At zoom=2 the snap threshold in scene units is 12/2 = 6.
+    const zoom = 2;
+    const thresholdScene = 12 / zoom;
+
+    const A = { x: 0, y: 0 };
+    const B = { x: 100, y: 0 };
+    const C = { x: 0, y: 100 };
+
+    const closeIn  = { x: 5, y: 0 }; // 5 scene-px: within threshold
+    const closeOut = { x: 7, y: 0 }; // 7 scene-px: outside threshold
+
+    expect(resolveSnapPoint(closeIn,  A, thresholdScene, 3)).toBe(A);
+    expect(resolveSnapPoint(closeOut, A, thresholdScene, 3)).toEqual(closeOut);
+
+    // Snapped → clean triangle
+    const c1 = resolveSnapPoint(closeIn, A, thresholdScene, 3);
+    const c2 = resolveSnapPoint(closeIn, A, thresholdScene, 4);
+    expect(calculateArea(deduplicatePoints([A, B, C, c1, c2]))).toBeCloseTo(5000, 1);
+
+    // Unsnapped → spurious vertex
+    const u = resolveSnapPoint(closeOut, A, thresholdScene, 3);
+    expect(calculateArea(deduplicatePoints([A, B, C, u]))).not.toBeCloseTo(5000, 0);
+  });
+
+  it('closing vertex equal to first point is mathematically inert in Shoelace', () => {
+    // Whether dedup retains or drops the trailing closing vertex (= first point),
+    // calculateArea must return the same value.
+    const A = { x: 10, y: 10 };
+    const B = { x: 110, y: 10 };
+    const C = { x: 10, y: 110 };
+
+    expect(calculateArea([A, B, C, A])).toBeCloseTo(calculateArea([A, B, C]), 10);
   });
 });
 
