@@ -11,6 +11,28 @@ import {
   createMeasurement,
   deleteMeasurement,
 } from '@workspace/api-client-react';
+import { toast } from '@/hooks/use-toast';
+
+/**
+ * Attempt `fn` once; on failure, retry once more. If the second attempt also
+ * fails, show a destructive toast with `errorTitle` and the caught message.
+ */
+async function saveWithRetry<T>(fn: () => Promise<T>, errorTitle: string): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(errorTitle, err);
+      toast({
+        variant: 'destructive',
+        title: errorTitle,
+        description: err instanceof Error ? err.message : 'Please check your connection and try again.',
+      });
+    }
+  }
+}
 
 export default function PDFPageViewer() {
   const { state, dispatch } = useViewerContext();
@@ -198,16 +220,19 @@ export default function PDFPageViewer() {
             dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
 
             if (documentId) {
-              createMeasurement(documentId, {
-                id,
-                pageNumber: currentPage,
-                type: 'distance',
-                label: mData.label,
-                realWorldValue: mData.value,
-                unit: mData.unit,
-                points: [p1, p2],
-                fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
-              }).catch(console.error);
+              saveWithRetry(
+                () => createMeasurement(documentId, {
+                  id,
+                  pageNumber: currentPage,
+                  type: 'distance',
+                  label: mData.label,
+                  realWorldValue: mData.value,
+                  unit: mData.unit,
+                  points: [p1, p2],
+                  fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
+                }),
+                'Measurement not saved',
+              );
             }
           }
           currentShape.current = null;
@@ -276,12 +301,15 @@ export default function PDFPageViewer() {
           };
           dispatch({ type: 'ADD_ANNOTATION', page: currentPage, annotation });
           if (documentId) {
-            createAnnotation(documentId, {
-              id,
-              pageNumber: currentPage,
-              type: annotation.type,
-              fabricData,
-            }).catch(console.error);
+            saveWithRetry(
+              () => createAnnotation(documentId, {
+                id,
+                pageNumber: currentPage,
+                type: annotation.type,
+                fabricData,
+              }),
+              'Annotation not saved',
+            );
           }
         });
       }
@@ -390,12 +418,15 @@ export default function PDFPageViewer() {
           dispatch({ type: 'ADD_ANNOTATION', page: currentPage, annotation });
 
           if (documentId) {
-            createAnnotation(documentId, {
-              id,
-              pageNumber: currentPage,
-              type: 'highlight',
-              fabricData: currentShape.current.toObject(['id']),
-            }).catch(console.error);
+            saveWithRetry(
+              () => createAnnotation(documentId, {
+                id,
+                pageNumber: currentPage,
+                type: 'highlight',
+                fabricData: currentShape.current!.toObject(['id']),
+              }),
+              'Highlight not saved',
+            );
           }
         }
         currentShape.current = null;
@@ -477,16 +508,19 @@ export default function PDFPageViewer() {
       dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
 
       if (documentId) {
-        createMeasurement(documentId, {
-          id,
-          pageNumber: currentPage,
-          type: 'area',
-          label: mData.label,
-          realWorldValue: mData.value,
-          unit: mData.unit,
-          points: pts,
-          fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
-        }).catch(console.error);
+        saveWithRetry(
+          () => createMeasurement(documentId, {
+            id,
+            pageNumber: currentPage,
+            type: 'area',
+            label: mData.label,
+            realWorldValue: mData.value,
+            unit: mData.unit,
+            points: pts,
+            fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
+          }),
+          'Measurement not saved',
+        );
       }
 
       // Reset area drawing state
@@ -531,8 +565,14 @@ export default function PDFPageViewer() {
               dispatch({ type: 'REMOVE_ANNOTATION', page: currentPage, id });
               dispatch({ type: 'REMOVE_MEASUREMENT', page: currentPage, id });
               if (documentId) {
-                deleteAnnotation(documentId, id).catch(() => {});
-                deleteMeasurement(documentId, id).catch(() => {});
+                saveWithRetry(
+                  () => deleteAnnotation(documentId, id),
+                  'Could not delete annotation',
+                );
+                saveWithRetry(
+                  () => deleteMeasurement(documentId, id),
+                  'Could not delete measurement',
+                );
               }
             }
           }

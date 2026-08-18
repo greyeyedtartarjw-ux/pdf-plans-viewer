@@ -2,6 +2,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ViewerProvider } from './store/ViewerContext';
 import Shell from './components/Shell';
+import { Toaster } from '@/components/ui/toaster';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -15,6 +16,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ViewerProvider>
         <Shell />
+        <Toaster />
       </ViewerProvider>
     </QueryClientProvider>
   );
