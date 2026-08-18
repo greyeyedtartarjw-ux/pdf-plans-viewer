@@ -1,19 +1,20 @@
 import * as pdfjsLib from 'pdfjs-dist';
-// Vite resolves ?url imports to the correct served path, required for cross-origin worker
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Initialize the worker once at module level
-pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
+// Worker is copied to public/ so it is served as a plain static file.
+// import.meta.env.BASE_URL ensures the path is correct regardless of the
+// proxy base path (e.g. "/" in dev, or a sub-path in production).
+(pdfjsLib as any).GlobalWorkerOptions.workerSrc =
+  `${import.meta.env.BASE_URL}pdf.worker.min.js`;
 
 export const loadPDF = async (file: File) => {
   const arrayBuffer = await file.arrayBuffer();
-  const loadingTask = pdfjsLib.getDocument(new Uint8Array(arrayBuffer));
+  const loadingTask = (pdfjsLib as any).getDocument({ data: new Uint8Array(arrayBuffer) });
   const pdf = await loadingTask.promise;
   return pdf;
 };
 
 export const renderPageToCanvas = async (
-  pdf: pdfjsLib.PDFDocumentProxy,
+  pdf: any,
   pageNumber: number,
   canvas: HTMLCanvasElement,
   scale: number = 1.0
@@ -21,12 +22,12 @@ export const renderPageToCanvas = async (
   const page = await pdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale });
 
-  // Set physical pixel size
+  // HiDPI: render at device-pixel-ratio, shrink via CSS
   const outputScale = window.devicePixelRatio || 1;
   canvas.width = Math.floor(viewport.width * outputScale);
   canvas.height = Math.floor(viewport.height * outputScale);
-  canvas.style.width = Math.floor(viewport.width) + "px";
-  canvas.style.height = Math.floor(viewport.height) + "px";
+  canvas.style.width = Math.floor(viewport.width) + 'px';
+  canvas.style.height = Math.floor(viewport.height) + 'px';
 
   const context = canvas.getContext('2d');
   if (!context) return null;
@@ -35,18 +36,12 @@ export const renderPageToCanvas = async (
     ? [outputScale, 0, 0, outputScale, 0, 0]
     : undefined;
 
-  const renderContext = {
-    canvasContext: context,
-    transform,
-    viewport,
-  };
-
-  await page.render(renderContext).promise;
+  await page.render({ canvasContext: context, transform, viewport }).promise;
   return { viewport, page };
 };
 
 export const extractTextContent = async (
-  pdf: pdfjsLib.PDFDocumentProxy,
+  pdf: any,
   pageNumber: number
 ) => {
   const page = await pdf.getPage(pageNumber);
@@ -54,5 +49,7 @@ export const extractTextContent = async (
   return textContent.items.map((item: any) => ({
     str: item.str,
     transform: item.transform,
+    width: item.width,
+    height: item.height,
   }));
 };

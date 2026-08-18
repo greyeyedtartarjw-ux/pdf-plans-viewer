@@ -77,6 +77,6 @@
   "dependencies": {
     "fabric": "^7.4.0",
     "html2canvas": "^1.4.1",
-    "pdfjs-dist": "^6.2.108"
+    "pdfjs-dist": "3.11.174"
   }
 }
