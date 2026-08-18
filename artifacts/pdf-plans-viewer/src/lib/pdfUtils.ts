@@ -1,11 +1,9 @@
-// @ts-ignore
-import * as pdfjsLib from 'pdfjs-dist/build/pdf';
+import * as pdfjsLib from 'pdfjs-dist';
+// Vite resolves ?url imports to the correct served path, required for cross-origin worker
+import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
-// Initialize the worker once
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).href;
+// Initialize the worker once at module level
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
 
 export const loadPDF = async (file: File) => {
   const arrayBuffer = await file.arrayBuffer();
