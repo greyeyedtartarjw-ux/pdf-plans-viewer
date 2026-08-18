@@ -1,6 +1,6 @@
 import React from 'react';
 import { useViewerContext } from '../store/ViewerContext';
-import { Trash2, Download, ExternalLink } from 'lucide-react';
+import { Trash2, Download, Ruler, Hexagon } from 'lucide-react';
 
 export default function MeasurementIndex() {
   const { state, dispatch } = useViewerContext();
@@ -85,7 +85,12 @@ export default function MeasurementIndex() {
               </button>
             </div>
             <div className="flex justify-between items-end">
-              <span className="text-sm text-sidebar-foreground capitalize">{m.type}</span>
+              <span className="flex items-center gap-1 text-sm text-sidebar-foreground capitalize">
+                {m.type === 'area'
+                  ? <Hexagon size={13} className="text-violet-400 shrink-0" />
+                  : <Ruler size={13} className="text-blue-400 shrink-0" />}
+                {m.type}
+              </span>
               <span className="text-sm font-mono font-medium text-sidebar-foreground bg-background/20 px-1.5 py-0.5 rounded">
                 {m.label}
               </span>
