@@ -6,6 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface Document {
+  id: number;
+  name: string;
+  hash: string;
+  createdAt: string;
 }

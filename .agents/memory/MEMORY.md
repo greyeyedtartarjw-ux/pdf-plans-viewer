@@ -1,0 +1,1 @@
+- [PDF Plans Viewer stack](pdf-plans-viewer.md) — pdfjs-dist 3.11.174 + Fabric 7 + API server; worker served from public/

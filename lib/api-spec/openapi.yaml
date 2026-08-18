@@ -10,13 +10,20 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: documents
+    description: PDF document registry
+  - name: annotations
+    description: Page annotations (highlights, notes, text)
+  - name: measurements
+    description: Scale-aware measurements
+  - name: shares
+    description: Shareable view links
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,6 +31,199 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /documents:
+    get:
+      operationId: listDocuments
+      tags: [documents]
+      summary: List all known documents
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Document"
+    post:
+      operationId: upsertDocument
+      tags: [documents]
+      summary: Register or find a document by hash (filename + size fingerprint)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentInput"
+      responses:
+        "200":
+          description: Existing or newly created document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+
+  /documents/{documentId}/scale:
+    get:
+      operationId: getDocumentScale
+      tags: [documents]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+      responses:
+        "200":
+          description: Scale config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScaleConfig"
+        "404":
+          description: Not found
+    put:
+      operationId: setDocumentScale
+      tags: [documents]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScaleInput"
+      responses:
+        "200":
+          description: Updated scale
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScaleConfig"
+
+  /documents/{documentId}/annotations:
+    get:
+      operationId: listAnnotations
+      tags: [annotations]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+      responses:
+        "200":
+          description: Annotations for the document
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Annotation"
+    post:
+      operationId: createAnnotation
+      tags: [annotations]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnotationInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Annotation"
+
+  /documents/{documentId}/annotations/{annotationId}:
+    delete:
+      operationId: deleteAnnotation
+      tags: [annotations]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+        - { name: annotationId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204":
+          description: Deleted
+
+  /documents/{documentId}/measurements:
+    get:
+      operationId: listMeasurements
+      tags: [measurements]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+      responses:
+        "200":
+          description: All measurements for the document
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Measurement"
+    post:
+      operationId: createMeasurement
+      tags: [measurements]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeasurementInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Measurement"
+
+  /documents/{documentId}/measurements/{measurementId}:
+    delete:
+      operationId: deleteMeasurement
+      tags: [measurements]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+        - { name: measurementId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204":
+          description: Deleted
+
+  /shares:
+    post:
+      operationId: createShare
+      tags: [shares]
+      summary: Create a shareable link for a document snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ShareInput"
+      responses:
+        "201":
+          description: Created share
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Share"
+
+  /shares/{token}:
+    get:
+      operationId: getShare
+      tags: [shares]
+      summary: Resolve a share token to its document + annotations + measurements
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Share payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SharePayload"
+        "404":
+          description: Not found or expired
+
 components:
   schemas:
     HealthStatus:
@@ -31,6 +231,185 @@ components:
       properties:
         status:
           type: string
-      required:
-        - status
+      required: [status]
 
+    Document:
+      type: object
+      properties:
+        id:
+          type: number
+        name:
+          type: string
+        hash:
+          type: string
+        createdAt:
+          type: string
+      required: [id, name, hash, createdAt]
+
+    DocumentInput:
+      type: object
+      properties:
+        name:
+          type: string
+        hash:
+          type: string
+      required: [name, hash]
+
+    ScaleConfig:
+      type: object
+      properties:
+        documentId:
+          type: number
+        isSet:
+          type: boolean
+        pixelsPerUnit:
+          type: number
+        unit:
+          type: string
+        realWorldUnit:
+          type: string
+      required: [documentId, isSet, pixelsPerUnit, unit, realWorldUnit]
+
+    ScaleInput:
+      type: object
+      properties:
+        isSet:
+          type: boolean
+        pixelsPerUnit:
+          type: number
+        unit:
+          type: string
+        realWorldUnit:
+          type: string
+      required: [isSet, pixelsPerUnit, unit, realWorldUnit]
+
+    Annotation:
+      type: object
+      properties:
+        id:
+          type: string
+        documentId:
+          type: number
+        pageNumber:
+          type: number
+        type:
+          type: string
+          enum: [highlight, note, text]
+        fabricData:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+      required: [id, documentId, pageNumber, type, fabricData, createdAt]
+
+    AnnotationInput:
+      type: object
+      properties:
+        id:
+          type: string
+        pageNumber:
+          type: number
+        type:
+          type: string
+          enum: [highlight, note, text]
+        fabricData:
+          type: object
+          additionalProperties: true
+      required: [id, pageNumber, type, fabricData]
+
+    Measurement:
+      type: object
+      properties:
+        id:
+          type: string
+        documentId:
+          type: number
+        pageNumber:
+          type: number
+        type:
+          type: string
+          enum: [distance, area]
+        label:
+          type: string
+        realWorldValue:
+          type: number
+        unit:
+          type: string
+        points:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        fabricData:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+      required: [id, documentId, pageNumber, type, label, realWorldValue, unit, points, fabricData, createdAt]
+
+    MeasurementInput:
+      type: object
+      properties:
+        id:
+          type: string
+        pageNumber:
+          type: number
+        type:
+          type: string
+          enum: [distance, area]
+        label:
+          type: string
+        realWorldValue:
+          type: number
+        unit:
+          type: string
+        points:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        fabricData:
+          type: object
+          additionalProperties: true
+      required: [id, pageNumber, type, label, realWorldValue, unit, points, fabricData]
+
+    Share:
+      type: object
+      properties:
+        id:
+          type: number
+        token:
+          type: string
+        documentId:
+          type: number
+        createdAt:
+          type: string
+        expiresAt:
+          type: ["string", "null"]
+      required: [id, token, documentId, createdAt, expiresAt]
+
+    ShareInput:
+      type: object
+      properties:
+        documentId:
+          type: number
+      required: [documentId]
+
+    SharePayload:
+      type: object
+      properties:
+        document:
+          $ref: "#/components/schemas/Document"
+        scale:
+          $ref: "#/components/schemas/ScaleConfig"
+        annotations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Annotation"
+        measurements:
+          type: array
+          items:
+            $ref: "#/components/schemas/Measurement"
+        share:
+          $ref: "#/components/schemas/Share"
+      required: [document, scale, annotations, measurements, share]

@@ -1,9 +1,10 @@
 import { LucideIcon } from 'lucide-react';
-import React from 'react';
+import React, { useState } from 'react';
 
 import { useViewerContext } from '../store/ViewerContext';
 import { Tool } from '../types';
 import { THEME } from '../lib/constants';
+import { createShare } from '@workspace/api-client-react';
 
 import {
   FolderOpen,
@@ -16,14 +17,13 @@ import {
   Type,
   ZoomIn,
   ZoomOut,
-  Maximize,
-  Search,
-  Printer,
-  Camera,
   ChevronLeft,
   ChevronRight,
-  Download,
-  Settings2
+  Camera,
+  Printer,
+  Settings2,
+  Share2,
+  Check,
 } from 'lucide-react';
 
 interface ToolbarProps {
@@ -45,7 +45,9 @@ const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
 
 export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: ToolbarProps) {
   const { state, dispatch } = useViewerContext();
-  const { zoom, activeTool, currentPage, totalPages, highlightColor } = state;
+  const { zoom, activeTool, currentPage, totalPages, highlightColor, documentId } = state;
+
+  const [shareState, setShareState] = useState<'idle' | 'copying' | 'copied'>('idle');
 
   const handleZoomIn = () => dispatch({ type: 'SET_ZOOM', zoom: Math.min(zoom + 0.25, 3.0) });
   const handleZoomOut = () => dispatch({ type: 'SET_ZOOM', zoom: Math.max(zoom - 0.25, 0.25) });
@@ -54,22 +56,34 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
   };
 
   const handlePrevPage = () => {
-    if (currentPage > 1) {
-      dispatch({ type: 'SET_CURRENT_PAGE', page: currentPage - 1 });
-    }
+    if (currentPage > 1) dispatch({ type: 'SET_CURRENT_PAGE', page: currentPage - 1 });
   };
-
   const handleNextPage = () => {
-    if (currentPage < totalPages) {
-      dispatch({ type: 'SET_CURRENT_PAGE', page: currentPage + 1 });
+    if (currentPage < totalPages) dispatch({ type: 'SET_CURRENT_PAGE', page: currentPage + 1 });
+  };
+  const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const page = parseInt(e.target.value);
+    if (!isNaN(page)) {
+      dispatch({ type: 'SET_CURRENT_PAGE', page: Math.max(1, Math.min(page, totalPages)) });
     }
   };
 
-  const handlePageInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    let page = parseInt(e.target.value);
-    if (!isNaN(page)) {
-      page = Math.max(1, Math.min(page, totalPages));
-      dispatch({ type: 'SET_CURRENT_PAGE', page });
+  const handleShare = async () => {
+    if (!documentId) {
+      alert('Open a PDF file first to create a share link.');
+      return;
+    }
+    setShareState('copying');
+    try {
+      const share = await createShare({ documentId });
+      const url = new URL(window.location.href);
+      url.searchParams.set('share', share.token);
+      await navigator.clipboard.writeText(url.toString());
+      setShareState('copied');
+      setTimeout(() => setShareState('idle'), 2500);
+    } catch {
+      setShareState('idle');
+      alert('Failed to create share link.');
     }
   };
 
@@ -96,15 +110,15 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
               key={t.id}
               onClick={() => dispatch({ type: 'SET_ACTIVE_TOOL', tool: t.id })}
               className={`p-2 rounded transition-colors relative group ${
-                isActive 
-                  ? 'bg-primary text-primary-foreground shadow-sm' 
+                isActive
+                  ? 'bg-primary text-primary-foreground shadow-sm'
                   : 'text-sidebar-foreground hover:bg-white/10'
               }`}
               title={t.label}
             >
               <t.icon size={18} />
-              
-              {/* Highlight color picker popover */}
+
+              {/* Highlight color picker */}
               {t.id === 'highlight' && isActive && (
                 <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-popover border border-border p-2 rounded-md shadow-lg flex gap-1 z-50">
                   {Object.entries(THEME.colors.highlight).map(([name, color]) => (
@@ -115,7 +129,7 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
                         dispatch({ type: 'SET_HIGHLIGHT_COLOR', color });
                       }}
                       className="w-6 h-6 rounded-full border-2 transition-transform hover:scale-110"
-                      style={{ 
+                      style={{
                         backgroundColor: color,
                         borderColor: highlightColor === color ? 'hsl(var(--primary))' : 'transparent'
                       }}
@@ -139,11 +153,11 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
         </button>
       </div>
 
-      {/* Right: Zoom & Navigation */}
+      {/* Right: Zoom, Navigation & Actions */}
       <div className="flex items-center gap-4">
         {/* Pagination */}
         <div className="flex items-center bg-background/10 rounded border border-sidebar-border">
-          <button 
+          <button
             onClick={handlePrevPage}
             disabled={currentPage <= 1 || totalPages === 0}
             className="p-1 text-sidebar-foreground hover:bg-white/10 disabled:opacity-30 transition-colors rounded-l"
@@ -151,16 +165,16 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
             <ChevronLeft size={18} />
           </button>
           <div className="px-2 text-sm text-sidebar-foreground font-mono flex items-center min-w-[100px] justify-center">
-            <input 
-              type="text" 
-              value={currentPage || ''} 
+            <input
+              type="text"
+              value={currentPage || ''}
               onChange={handlePageInputChange}
               className="w-8 text-center bg-transparent border-b border-transparent focus:border-primary focus:outline-none"
               disabled={totalPages === 0}
             />
             <span className="opacity-50">/ {totalPages || '-'}</span>
           </div>
-          <button 
+          <button
             onClick={handleNextPage}
             disabled={currentPage >= totalPages || totalPages === 0}
             className="p-1 text-sidebar-foreground hover:bg-white/10 disabled:opacity-30 transition-colors rounded-r"
@@ -176,8 +190,8 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
           <button onClick={handleZoomOut} className="p-1.5 text-sidebar-foreground hover:bg-white/10 rounded transition-colors">
             <ZoomOut size={16} />
           </button>
-          <select 
-            value={zoom} 
+          <select
+            value={zoom}
             onChange={handleZoomChange}
             className="bg-background/10 text-sidebar-foreground border border-sidebar-border text-sm rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary w-24 font-mono"
           >
@@ -199,6 +213,18 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
 
         {/* Actions */}
         <div className="flex items-center gap-1">
+          <button
+            onClick={handleShare}
+            disabled={!documentId || shareState === 'copying'}
+            title={documentId ? 'Copy share link' : 'Open a PDF to share'}
+            className={`p-2 rounded transition-colors ${
+              shareState === 'copied'
+                ? 'text-green-400'
+                : 'text-sidebar-foreground hover:bg-white/10 disabled:opacity-30'
+            }`}
+          >
+            {shareState === 'copied' ? <Check size={18} /> : <Share2 size={18} />}
+          </button>
           <button onClick={onSnapshot} className="p-2 text-sidebar-foreground hover:bg-white/10 rounded transition-colors" title="Snapshot (PNG)">
             <Camera size={18} />
           </button>
