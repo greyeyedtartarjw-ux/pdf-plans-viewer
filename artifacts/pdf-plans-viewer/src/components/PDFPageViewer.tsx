@@ -52,6 +52,7 @@ export default function PDFPageViewer() {
   const currentShape = useRef<fabric.Object | null>(null);
   const areaPreviewLines = useRef<fabric.Line[]>([]);
   const areaLivePreview = useRef<fabric.Line | null>(null);
+  const areaLiveLabel = useRef<fabric.Text | null>(null);
   const snapRing = useRef<fabric.Circle | null>(null);
   const isSnapping = useRef(false);
 
@@ -69,6 +70,10 @@ export default function PDFPageViewer() {
     if (areaLivePreview.current) {
       canvas.remove(areaLivePreview.current);
       areaLivePreview.current = null;
+    }
+    if (areaLiveLabel.current) {
+      canvas.remove(areaLiveLabel.current);
+      areaLiveLabel.current = null;
     }
     if (snapRing.current) {
       canvas.remove(snapRing.current);
@@ -388,6 +393,37 @@ export default function PDFPageViewer() {
         });
         areaLivePreview.current = liveLine;
         fCanvas.add(liveLine);
+
+        // Show a running area estimate when ≥3 points would form a polygon
+        const potentialPts = [...points.current, targetPt];
+        if (potentialPts.length >= 3) {
+          const pxArea = calculateArea(potentialPts);
+          const mData = formatMeasurement(pxArea / Math.pow(zoom, 2), scale, true);
+          const cx = potentialPts.reduce((s, p) => s + p.x, 0) / potentialPts.length;
+          const cy = potentialPts.reduce((s, p) => s + p.y, 0) / potentialPts.length;
+
+          if (areaLiveLabel.current) {
+            fCanvas.remove(areaLiveLabel.current);
+          }
+          const liveLabel = new fabric.Text(`~${mData.label}`, {
+            left: cx,
+            top: cy,
+            fontSize: 13 / zoom,
+            fontFamily: 'monospace',
+            fill: THEME.colors.measurement.text,
+            backgroundColor: 'rgba(255,255,255,0.85)',
+            originX: 'center',
+            originY: 'center',
+            selectable: false,
+            evented: false,
+          });
+          areaLiveLabel.current = liveLabel;
+          fCanvas.add(liveLabel);
+        } else if (areaLiveLabel.current) {
+          fCanvas.remove(areaLiveLabel.current);
+          areaLiveLabel.current = null;
+        }
+
         fCanvas.renderAll();
       } else if (activeTool === 'highlight' && currentShape.current) {
         const rect = currentShape.current as fabric.Rect;
@@ -457,6 +493,10 @@ export default function PDFPageViewer() {
       if (areaLivePreview.current) {
         fCanvas.remove(areaLivePreview.current);
         areaLivePreview.current = null;
+      }
+      if (areaLiveLabel.current) {
+        fCanvas.remove(areaLiveLabel.current);
+        areaLiveLabel.current = null;
       }
       if (snapRing.current) {
         fCanvas.remove(snapRing.current);
