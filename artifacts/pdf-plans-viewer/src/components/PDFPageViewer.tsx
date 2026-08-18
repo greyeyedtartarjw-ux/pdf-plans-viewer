@@ -30,6 +30,8 @@ export default function PDFPageViewer() {
   const currentShape = useRef<fabric.Object | null>(null);
   const areaPreviewLines = useRef<fabric.Line[]>([]);
   const areaLivePreview = useRef<fabric.Line | null>(null);
+  const snapRing = useRef<fabric.Circle | null>(null);
+  const isSnapping = useRef(false);
 
   /** Show a transient hint message to the user, auto-dismissed after 2.5 s. */
   const showAreaHint = useCallback((msg: string) => {
@@ -46,8 +48,14 @@ export default function PDFPageViewer() {
       canvas.remove(areaLivePreview.current);
       areaLivePreview.current = null;
     }
+    if (snapRing.current) {
+      canvas.remove(snapRing.current);
+      snapRing.current = null;
+    }
+    isSnapping.current = false;
     isDrawing.current = false;
     points.current = [];
+    canvas.setCursor('crosshair');
     canvas.renderAll();
   }, []);
 
@@ -294,12 +302,51 @@ export default function PDFPageViewer() {
         line.set({ x2: pointer.x, y2: pointer.y });
         fCanvas.renderAll();
       } else if (activeTool === 'measure-area' && points.current.length > 0) {
-        // Show a dashed live-preview line from the last placed point to the cursor
+        // Snap detection: check if cursor is within 12 screen-px of the first point.
+        // Need ≥3 placed points so closing the polygon yields a valid area.
+        const firstPt = points.current[0];
+        const snapThresholdPx = 12 / zoom; // convert screen px → scene units
+        const dx = pointer.x - firstPt.x;
+        const dy = pointer.y - firstPt.y;
+        const distToFirst = Math.sqrt(dx * dx + dy * dy);
+        const canSnap = points.current.length >= 3 && distToFirst <= snapThresholdPx;
+
+        // Add / remove snap ring around the first point
+        if (canSnap) {
+          if (!snapRing.current) {
+            const ring = new fabric.Circle({
+              left: firstPt.x,
+              top: firstPt.y,
+              radius: 9 / zoom,
+              fill: 'rgba(59, 130, 246, 0.18)',
+              stroke: THEME.colors.measurement.line,
+              strokeWidth: 2 / zoom,
+              originX: 'center',
+              originY: 'center',
+              selectable: false,
+              evented: false,
+            });
+            snapRing.current = ring;
+            fCanvas.add(ring);
+          }
+          isSnapping.current = true;
+          fCanvas.setCursor('pointer');
+        } else {
+          if (snapRing.current) {
+            fCanvas.remove(snapRing.current);
+            snapRing.current = null;
+          }
+          isSnapping.current = false;
+          fCanvas.setCursor('crosshair');
+        }
+
+        // Live-preview dashed line: snap endpoint to first point when in range
+        const targetPt = canSnap ? firstPt : pointer;
         if (areaLivePreview.current) {
           fCanvas.remove(areaLivePreview.current);
         }
         const lastPt = points.current[points.current.length - 1];
-        const liveLine = new fabric.Line([lastPt.x, lastPt.y, pointer.x, pointer.y], {
+        const liveLine = new fabric.Line([lastPt.x, lastPt.y, targetPt.x, targetPt.y], {
           strokeWidth: 2 / zoom,
           stroke: THEME.colors.measurement.line,
           fill: THEME.colors.measurement.line,
@@ -376,6 +423,12 @@ export default function PDFPageViewer() {
         fCanvas.remove(areaLivePreview.current);
         areaLivePreview.current = null;
       }
+      if (snapRing.current) {
+        fCanvas.remove(snapRing.current);
+        snapRing.current = null;
+      }
+      isSnapping.current = false;
+      fCanvas.setCursor('crosshair');
 
       // Compute area in pixel² (canvas coords, already at zoom scale)
       const pxArea = calculateArea(pts);
