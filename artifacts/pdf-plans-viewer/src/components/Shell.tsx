@@ -220,7 +220,7 @@ export default function Shell() {
             <EmptyState onFileSelect={handleFileSelect} />
           ) : (
             <div id="pdf-scroll-container" className="flex-1 overflow-auto bg-muted p-8 print:p-0 print:bg-white print:overflow-visible">
-              <div id="pdf-viewer-area" className="mx-auto w-fit print:shadow-none print:border-none">
+              <div id="pdf-viewer-area" className="mx-auto w-max print:shadow-none print:border-none">
                 <PDFPageViewer />
               </div>
             </div>
