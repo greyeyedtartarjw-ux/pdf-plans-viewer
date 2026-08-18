@@ -26,6 +26,8 @@ export default function PDFPageViewer() {
   const isDrawing = useRef(false);
   const points = useRef<{ x: number, y: number }[]>([]);
   const currentShape = useRef<fabric.Object | null>(null);
+  const areaPreviewLines = useRef<fabric.Line[]>([]);
+  const areaLivePreview = useRef<fabric.Line | null>(null);
 
   // 1. Render PDF Page
   useEffect(() => {
@@ -186,8 +188,20 @@ export default function PDFPageViewer() {
           isDrawing.current = true;
           points.current = [pointer];
         } else {
+          // Draw a segment from the previous point to this new point
+          const lastPt = points.current[points.current.length - 1];
+          const seg = new fabric.Line([lastPt.x, lastPt.y, pointer.x, pointer.y], {
+            strokeWidth: 2 / zoom,
+            stroke: THEME.colors.measurement.line,
+            fill: THEME.colors.measurement.line,
+            selectable: false,
+            evented: false,
+          });
+          areaPreviewLines.current.push(seg);
+          fCanvas.add(seg);
           points.current.push(pointer);
-          // Require at least 3 points; double-click closes shape (handled in dblclick)
+          fCanvas.renderAll();
+          // Polygon closed via double-click (handled in dblclick event)
         }
       } else if (activeTool === 'highlight') {
         isDrawing.current = true;
@@ -257,6 +271,23 @@ export default function PDFPageViewer() {
         const line = currentShape.current as fabric.Line;
         line.set({ x2: pointer.x, y2: pointer.y });
         fCanvas.renderAll();
+      } else if (activeTool === 'measure-area' && points.current.length > 0) {
+        // Show a dashed live-preview line from the last placed point to the cursor
+        if (areaLivePreview.current) {
+          fCanvas.remove(areaLivePreview.current);
+        }
+        const lastPt = points.current[points.current.length - 1];
+        const liveLine = new fabric.Line([lastPt.x, lastPt.y, pointer.x, pointer.y], {
+          strokeWidth: 2 / zoom,
+          stroke: THEME.colors.measurement.line,
+          fill: THEME.colors.measurement.line,
+          strokeDashArray: [6 / zoom, 4 / zoom],
+          selectable: false,
+          evented: false,
+        });
+        areaLivePreview.current = liveLine;
+        fCanvas.add(liveLine);
+        fCanvas.renderAll();
       } else if (activeTool === 'highlight' && currentShape.current) {
         const rect = currentShape.current as fabric.Rect;
         const start = points.current[0];
@@ -303,14 +334,98 @@ export default function PDFPageViewer() {
       }
     };
 
+    const handleDblClick = (o: fabric.TEvent) => {
+      if (activeTool !== 'measure-area' || !isDrawing.current) return;
+
+      // mousedown fires twice before dblclick, so the last point in the array
+      // is the duplicate from the second mousedown — remove it before closing.
+      const pts = points.current.slice(0, -1);
+      if (pts.length < 3) return;
+
+      // Clear all preview objects
+      areaPreviewLines.current.forEach(l => fCanvas.remove(l));
+      areaPreviewLines.current = [];
+      if (areaLivePreview.current) {
+        fCanvas.remove(areaLivePreview.current);
+        areaLivePreview.current = null;
+      }
+
+      // Compute area in pixel² (canvas coords, already at zoom scale)
+      const pxArea = calculateArea(pts);
+      const mData = formatMeasurement(pxArea / Math.pow(zoom, 2), scale, true);
+
+      // Centroid for the label
+      const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+      const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+
+      const polygon = new fabric.Polygon(pts.map(p => ({ x: p.x, y: p.y })), {
+        fill: 'rgba(59, 130, 246, 0.15)',
+        stroke: THEME.colors.measurement.line,
+        strokeWidth: 2 / zoom,
+        selectable: false,
+        evented: false,
+      });
+
+      const label = new fabric.Text(mData.label, {
+        left: cx,
+        top: cy,
+        fontSize: 14 / zoom,
+        fontFamily: 'monospace',
+        fill: THEME.colors.measurement.text,
+        backgroundColor: 'white',
+        originX: 'center',
+        originY: 'center',
+        selectable: false,
+      });
+
+      const group = new fabric.Group([polygon, label], { selectable: false });
+      fCanvas.add(group);
+
+      const id = generateId();
+      group.set('id', id as any);
+
+      const measurement = {
+        id,
+        pageNumber: currentPage,
+        type: 'area' as const,
+        label: mData.label,
+        realWorldValue: mData.value,
+        unit: mData.unit,
+        points: pts,
+        data: group.toObject(['id'] as any),
+      };
+      dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
+
+      if (documentId) {
+        createMeasurement(documentId, {
+          id,
+          pageNumber: currentPage,
+          type: 'area',
+          label: mData.label,
+          realWorldValue: mData.value,
+          unit: mData.unit,
+          points: pts,
+          fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
+        }).catch(console.error);
+      }
+
+      // Reset area drawing state
+      isDrawing.current = false;
+      points.current = [];
+      currentShape.current = null;
+      fCanvas.renderAll();
+    };
+
     fCanvas.on('mouse:down', handleMouseDown);
     fCanvas.on('mouse:move', handleMouseMove);
     fCanvas.on('mouse:up', handleMouseUp);
+    fCanvas.on('mouse:dblclick', handleDblClick);
 
     return () => {
       fCanvas.off('mouse:down', handleMouseDown);
       fCanvas.off('mouse:move', handleMouseMove);
       fCanvas.off('mouse:up', handleMouseUp);
+      fCanvas.off('mouse:dblclick', handleDblClick);
     };
   }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId]);
 
