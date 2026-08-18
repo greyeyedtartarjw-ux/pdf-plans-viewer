@@ -14,6 +14,8 @@ import {
   getDocumentScale,
   setDocumentScale,
   getShare,
+  useHealthCheck,
+  getHealthCheckQueryKey,
 } from '@workspace/api-client-react';
 import type { Scale, Annotation, Measurement } from '../types';
 
@@ -64,6 +66,21 @@ export default function Shell() {
   const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [pixelDistanceToScale, setPixelDistanceToScale] = useState(0);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
+
+  // ── Connectivity check ────────────────────────────────────────────────────
+  // Poll the health endpoint every 15 s. Banner is shown while the server is
+  // unreachable and dismissed automatically when it comes back — no manual
+  // close so users cannot accidentally hide an active outage.
+  const { isError: serverUnreachable, isSuccess: serverReachable } = useHealthCheck({
+    query: { queryKey: getHealthCheckQueryKey(), refetchInterval: 15_000, retry: 1 },
+  });
+  // Track whether the banner has been shown at least once so we don't flash it
+  // on initial load before the first health check completes.
+  const [serverChecked, setServerChecked] = useState(false);
+  useEffect(() => {
+    if (serverUnreachable || serverReachable) setServerChecked(true);
+  }, [serverUnreachable, serverReachable]);
+  const showServerWarning = serverChecked && serverUnreachable;
 
   // Expose callback for scale tool
   useEffect(() => {
@@ -208,6 +225,13 @@ export default function Shell() {
         <Sidebar />
 
         <main className="flex-1 flex flex-col relative bg-muted/40">
+          {/* Server unreachable banner — persistent until connectivity is restored */}
+          {showServerWarning && (
+            <div className="bg-destructive/10 border-b border-destructive/30 px-4 py-2 text-xs text-destructive font-medium text-center">
+              ⚠ Changes won't be saved — server is unreachable. Check your connection or reload the page.
+            </div>
+          )}
+
           {/* Share / status banner */}
           {shareMsg && (
             <div className="bg-primary/10 border-b border-primary/20 px-4 py-2 text-xs text-primary font-medium flex justify-between items-center">
