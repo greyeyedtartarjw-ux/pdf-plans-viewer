@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "PDF Plans Viewer"
+description = "A professional PDF building plans viewer for architects and construction teams. Features scale-aware measurement tools for distance and area, multi-color highlighting, sticky notes, full-text search with page-indexed results, pan/zoom navigation, snapshot capture, print support, and a per-page measurement tally/index panel."
+version = "1.0.0"
+id = "artifacts/pdf-plans-viewer"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 20345
+
+[services.development]
+run = "pnpm --filter @workspace/pdf-plans-viewer run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/pdf-plans-viewer", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/pdf-plans-viewer/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20345"
+BASE_PATH = "/"
