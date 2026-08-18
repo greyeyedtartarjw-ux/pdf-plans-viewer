@@ -13,6 +13,9 @@ interface ScrollInfo {
 interface DragState {
   rx: number;
   ry: number;
+  imgEl: HTMLImageElement;
+  contentOffsetX: number; // left edge of page in scroll-space (constant during drag)
+  contentOffsetY: number; // top  edge of page in scroll-space (constant during drag)
 }
 
 function getScrollContainer(): HTMLElement | null {
@@ -133,13 +136,34 @@ export default function PageThumbnails() {
       const rect = computeViewportRect(imgEl);
       if (!rect) return;
 
-      dragRef.current = { rx: rect.rx, ry: rect.ry };
+      // Capture content offset once — the absolute position of #pdf-viewer-area
+      // in scroll-space never changes during a drag (scroll doesn't move the content).
+      const contentEl = sc.querySelector('#pdf-viewer-area') as HTMLElement | null;
+      let contentOffsetX = 0;
+      let contentOffsetY = 0;
+      if (contentEl) {
+        const scRect = sc.getBoundingClientRect();
+        const cRect  = contentEl.getBoundingClientRect();
+        contentOffsetX = cRect.left - scRect.left + sc.scrollLeft;
+        contentOffsetY = cRect.top  - scRect.top  + sc.scrollTop;
+      }
+
+      dragRef.current = { rx: rect.rx, ry: rect.ry, imgEl, contentOffsetX, contentOffsetY };
 
       const onMove = (me: MouseEvent) => {
         const d = dragRef.current;
         if (!d) return;
-        sc.scrollLeft += me.movementX / d.rx;
-        sc.scrollTop  += me.movementY / d.ry;
+
+        // Where is the mouse in thumbnail-image coordinates?
+        const imgRect = d.imgEl.getBoundingClientRect();
+        const thumbX = Math.max(0, Math.min(me.clientX - imgRect.left, imgRect.width));
+        const thumbY = Math.max(0, Math.min(me.clientY - imgRect.top,  imgRect.height));
+
+        // Convert to page-pixel position and center the viewport there.
+        const pageX = thumbX / d.rx;
+        const pageY = thumbY / d.ry;
+        sc.scrollLeft = d.contentOffsetX + pageX - sc.clientWidth  / 2;
+        sc.scrollTop  = d.contentOffsetY + pageY - sc.clientHeight / 2;
       };
 
       const onUp = () => {
