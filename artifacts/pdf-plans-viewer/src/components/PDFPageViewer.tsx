@@ -12,19 +12,7 @@ import {
   deleteMeasurement,
 } from '@workspace/api-client-react';
 import { toast } from '@/hooks/use-toast';
-
-/**
- * Return true when an HTTP error status should never be retried.
- * 4xx errors (except 429 Too Many Requests) are client errors that a retry
- * cannot fix. 409 Conflict in particular signals the record already exists.
- */
-function isNonRetryable(err: unknown): boolean {
-  if (err && typeof err === 'object' && 'status' in err) {
-    const status = (err as { status?: unknown }).status;
-    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
-  }
-  return false;
-}
+import { createSaveQueue } from '../lib/saveQueue';
 
 export default function PDFPageViewer() {
   const { state, dispatch } = useViewerContext();
@@ -88,124 +76,59 @@ export default function PDFPageViewer() {
     }
   }, []); // stable — only reads refs and dispatchRef
 
+  // ── Failed-save queue ─────────────────────────────────────────────────────
+  // The retry mechanism is framework-agnostic and separately unit tested. Its
+  // lifecycle hooks keep the incoming save-status indicator in sync without
+  // duplicating queue behavior in this component.
+  const saveQueueRef = useRef<ReturnType<typeof createSaveQueue> | null>(null);
+  if (!saveQueueRef.current) {
+    saveQueueRef.current = createSaveQueue(toast, {
+      onSaveStart: () => {
+        saveInFlight.current++;
+        recomputeStatus();
+      },
+      onSaveComplete: (outcome, attemptedRequest) => {
+        if (attemptedRequest) saveInFlight.current--;
+        if (outcome === 'queued') failureQueueCount.current++;
+        if (outcome === 'terminalFailure') terminalFailureCount.current++;
+        recomputeStatus();
+      },
+      onRetryStart: (attemptedCount) => {
+        saveInFlight.current += attemptedCount;
+        failureQueueCount.current = Math.max(0, failureQueueCount.current - attemptedCount);
+        recomputeStatus();
+      },
+      onRetryComplete: (attemptedCount, failureCount) => {
+        saveInFlight.current -= attemptedCount;
+        failureQueueCount.current += failureCount;
+        recomputeStatus();
+      },
+    });
+  }
+
+  useEffect(() => {
+    const q = saveQueueRef.current!;
+    (window as any)._pendingRetryCount = () => q.pendingCount();
+    (window as any)._retryFailedSaves = () => q.retryAll();
+    return () => {
+      delete (window as any)._pendingRetryCount;
+      delete (window as any)._retryFailedSaves;
+    };
+  }, []);
+
+  // Delegates the health-check/save-call race to saveQueue, which retries once
+  // and retains the operation if the server drops during either attempt.
+  const saveWithRetry = useCallback(
+    (fn: () => Promise<unknown>, errorTitle: string): Promise<void> =>
+      saveQueueRef.current!.saveWithRetry(fn, errorTitle, serverUnreachable),
+    [serverUnreachable],
+  );
+
   // Keep a ref to saveWithRetry so the window callback (set up once) always
   // calls the latest version, which captures the current serverUnreachable value.
   const saveWithRetryRef = useRef<(fn: () => Promise<unknown>, errorTitle: string) => Promise<void>>(
     async () => {}
   );
-
-  // ── Failed-save queue ─────────────────────────────────────────────────────
-  // Stores retry functions for saves that failed due to server being unreachable.
-  // Exposed via window callbacks so Shell.tsx can trigger retry when server recovers.
-  const failedSaves = useRef<Array<{ fn: () => Promise<unknown>; errorTitle: string }>>([]);
-
-  useEffect(() => {
-    (window as any)._pendingRetryCount = () => failedSaves.current.length;
-    (window as any)._retryFailedSaves = async () => {
-      const toRetry = [...failedSaves.current];
-      failedSaves.current = [];
-      // Move items from the failure queue into in-flight so the indicator shows
-      // 'saving' while the retry is in progress.
-      saveInFlight.current += toRetry.length;
-      failureQueueCount.current = Math.max(0, failureQueueCount.current - toRetry.length);
-      recomputeStatus();
-
-      const results = await Promise.allSettled(toRetry.map(({ fn }) => fn()));
-      // Use original indices so a partial failure requeues only the items that
-      // actually failed, not an equal-length prefix of the successful items.
-      results.forEach((result, i) => {
-        if (result.status === 'rejected') {
-          failedSaves.current.push(toRetry[i]);
-          failureQueueCount.current++;
-        }
-      });
-      saveInFlight.current -= toRetry.length;
-      recomputeStatus(); // reflects the final success/failure state
-
-      const failureCount = results.filter(r => r.status === 'rejected').length;
-      if (failureCount > 0) {
-        toast({
-          variant: 'destructive',
-          title: 'Some changes could not be saved',
-          description: `${failureCount} item(s) still failed. Check your connection.`,
-        });
-        throw new Error('Partial retry failure');
-      } else {
-        toast({
-          title: 'Changes saved',
-          description: 'All previously unsaved changes have been saved successfully.',
-        });
-      }
-    };
-    return () => {
-      delete (window as any)._pendingRetryCount;
-      delete (window as any)._retryFailedSaves;
-    };
-  }, [recomputeStatus]); // recomputeStatus is stable, so this runs once on mount
-
-  // ── Connectivity-aware save helper ────────────────────────────────────────
-  // When the server is unreachable, skips the API call, shows an explicit
-  // "unable to save" error, and queues the operation for retry when the
-  // server comes back. Otherwise retries once on transient failure.
-  //
-  // Save status is derived entirely from saveInFlight and failureQueueCount via
-  // recomputeStatus, ensuring queued failures can never be overwritten by a
-  // concurrent unrelated success.
-  const saveWithRetry = useCallback(async (fn: () => Promise<unknown>, errorTitle: string): Promise<void> => {
-    if (serverUnreachable) {
-      toast({
-        variant: 'destructive',
-        title: 'Unable to save — server is unreachable',
-        description: 'Your work is visible on screen. It will be queued for retry when the connection is restored.',
-      });
-      failedSaves.current.push({ fn, errorTitle });
-      failureQueueCount.current++;
-      recomputeStatus(); // → 'failed'
-      return;
-    }
-
-    saveInFlight.current++;
-    recomputeStatus(); // → 'saving'
-
-    try {
-      await fn();
-      saveInFlight.current--;
-      recomputeStatus(); // → 'saved' if no queued failures remain
-    } catch (firstErr) {
-      if (isNonRetryable(firstErr)) {
-        console.error(errorTitle, firstErr);
-        toast({
-          variant: 'destructive',
-          title: errorTitle,
-          description: firstErr instanceof Error ? firstErr.message : 'Please check your connection and try again.',
-        });
-        // Non-retryable mutations are not queued, but they still represent
-        // local work that is not on the server. Keep the failure visible so a
-        // user cannot close the document after seeing a misleading "Saved".
-        terminalFailureCount.current++;
-        saveInFlight.current--;
-        recomputeStatus();
-        return;
-      }
-      try {
-        await fn();
-        saveInFlight.current--;
-        recomputeStatus(); // → 'saved' if no queued failures remain
-      } catch (err) {
-        console.error(errorTitle, err);
-        // Queue for retry — the server may have gone down between our health check and this call
-        failedSaves.current.push({ fn, errorTitle });
-        failureQueueCount.current++;
-        saveInFlight.current--;
-        recomputeStatus(); // → 'failed' (queued failure takes priority)
-        toast({
-          variant: 'destructive',
-          title: 'Unable to save — server is unreachable',
-          description: 'Your work is visible on screen and has been queued for retry.',
-        });
-      }
-    }
-  }, [serverUnreachable, recomputeStatus]);
 
   // Shell uses this bridge for saves that originate outside the canvas, such
   // as scale calibration. It deliberately points at the latest helper so its
