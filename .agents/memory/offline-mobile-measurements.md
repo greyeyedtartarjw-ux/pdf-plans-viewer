@@ -1,6 +1,6 @@
 ---
 name: Offline mobile measurements
-description: Reliability rules for the mobile measurement cache and offline retry queue.
+description: Reliability rules for mobile plan data, including measurements and scale calibration.
 ---
 
 Persist both pending *and confirmed* measurements locally. A retry queue alone only protects new offline drawings; field users must also be able to reopen plans with all previously confirmed measurements while no network is available.
@@ -8,6 +8,19 @@ Persist both pending *and confirmed* measurements locally. A retry queue alone o
 **Why:** The PDF itself already lives on-device, so rendering it without its historical measurements produces a misleading incomplete plan. Network recovery can also overlap with a new drawing, and independent read-modify-write operations against AsyncStorage can overwrite that new pending item.
 
 **How to apply:** Update the confirmed-measurement cache after API reads and mutations, hydrate it alongside remote data (not only after an error), and route every retry-queue mutation through one serialized operation. Make cache list writes merge-aware so an older in-flight list response cannot erase a later create/delete. Retain failed queue entries and only remove an item after a successful server response.
+
+Document-wide settings such as measurement scale also need durable offline
+storage. Store a single latest pending value per document, overlay it on the
+last remote value while the API is unavailable, and serialize sends so an older
+request cannot overwrite a newer calibration.
+
+**Why:** A measurement created after an offline calibration must use the user's
+latest scale immediately, and reopening the plan must not require recalibration
+before connectivity returns.
+
+**How to apply:** Persist the calibration before attempting the API request,
+retain it after failures, retry on app launch and network recovery, and remove
+only the exact acknowledged pending value.
 
 The mobile PDF renderer and its worker must be bundled as local app assets, never loaded from a runtime CDN.
 

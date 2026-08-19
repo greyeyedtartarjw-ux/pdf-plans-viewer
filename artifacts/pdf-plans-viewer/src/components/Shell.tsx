@@ -36,7 +36,6 @@ import {
   getPendingOps,
   countPendingOps,
   flushPendingOps,
-  getPendingScaleUpdate,
   nextPendingSequence,
   QUEUE_CHANGED_EVENT,
   removeCachedDocumentId,
@@ -322,23 +321,13 @@ export default function Shell() {
   /** Restore queued local work without requiring the API to be reachable. */
   const restoreOfflinePendingState = useCallback((docId: number) => {
     const pendingOps = getPendingOps(docId);
-    const merged = mergePendingState({}, {}, pendingOps);
+    const merged = mergePendingState({}, {}, pendingOps, DEFAULT_SCALE);
     dispatch({
       type: 'LOAD_REMOTE_STATE',
       documentId: docId,
       annotations: merged.annotations,
       measurements: merged.measurements,
-      scale: (() => {
-        const pendingScale = getPendingScaleUpdate(docId);
-        return pendingScale
-          ? {
-              set: pendingScale.isSet,
-              pixelsPerUnit: pendingScale.pixelsPerUnit,
-              unit: pendingScale.unit,
-              realWorldUnit: pendingScale.realWorldUnit,
-            }
-          : DEFAULT_SCALE;
-      })(),
+      scale: merged.scale ?? DEFAULT_SCALE,
     });
     setPendingCount(pendingOps.length);
     needsRemoteHydrationRef.current = true;
@@ -353,27 +342,19 @@ export default function Shell() {
       getDocumentScale(docId),
     ]);
     const pendingOps = getPendingOps(docId);
+    const remoteScale = mapApiScale(apiScale);
     const merged = mergePendingState(
       mapApiAnnotations(apiAnnotations),
       mapApiMeasurements(apiMeasurements),
       pendingOps,
+      remoteScale,
     );
     dispatch({
       type: 'LOAD_REMOTE_STATE',
       documentId: docId,
       annotations: merged.annotations,
       measurements: merged.measurements,
-      scale: (() => {
-        const pendingScale = getPendingScaleUpdate(docId);
-        return pendingScale
-          ? {
-              set: pendingScale.isSet,
-              pixelsPerUnit: pendingScale.pixelsPerUnit,
-              unit: pendingScale.unit,
-              realWorldUnit: pendingScale.realWorldUnit,
-            }
-          : mapApiScale(apiScale);
-      })(),
+      scale: merged.scale ?? remoteScale,
     });
     setPendingCount(pendingOps.length);
     needsRemoteHydrationRef.current = false;

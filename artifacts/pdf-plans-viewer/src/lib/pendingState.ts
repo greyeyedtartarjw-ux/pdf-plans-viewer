@@ -1,4 +1,4 @@
-import type { Annotation, Measurement } from '../types';
+import type { Annotation, Measurement, Scale } from '../types';
 import type { PendingOp } from './pendingQueue';
 
 /**
@@ -9,6 +9,7 @@ export function mergePendingState(
   remoteAnnotations: Record<number, Annotation[]>,
   remoteMeasurements: Record<number, Measurement[]>,
   pendingOps: PendingOp[],
+  remoteScale?: Scale,
 ) {
   const annotations = Object.fromEntries(
     Object.entries(remoteAnnotations).map(([page, items]) => [page, [...items]]),
@@ -16,6 +17,7 @@ export function mergePendingState(
   const measurements = Object.fromEntries(
     Object.entries(remoteMeasurements).map(([page, items]) => [page, [...items]]),
   ) as Record<number, Measurement[]>;
+  let scale = remoteScale;
 
   for (const op of pendingOps) {
     if (op.opType === 'create_annotation') {
@@ -64,8 +66,15 @@ export function mergePendingState(
             : measurement,
         );
       }
+    } else if (op.opType === 'set_scale') {
+      scale = {
+        set: op.isSet,
+        pixelsPerUnit: op.pixelsPerUnit,
+        unit: op.unit,
+        realWorldUnit: op.realWorldUnit,
+      };
     }
   }
 
-  return { annotations, measurements };
+  return { annotations, measurements, scale };
 }

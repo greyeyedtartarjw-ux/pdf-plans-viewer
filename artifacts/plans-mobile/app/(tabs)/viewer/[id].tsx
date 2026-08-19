@@ -26,7 +26,6 @@ import {
   deleteMeasurement,
   getDocumentScale,
   listMeasurements,
-  setDocumentScale,
   updateMeasurement,
 } from '@workspace/api-client-react';
 import { createViewerHtml } from '@/constants/viewerHtml';
@@ -43,6 +42,8 @@ import {
 import type { LocalDocument } from '../index';
 import { useOfflineQueue } from '@/hooks/useOfflineQueue';
 import type { PendingMeasurement } from '@/hooks/useOfflineQueue';
+import { usePendingScale } from '@/hooks/usePendingScale';
+import type { DocumentScaleInput } from '@/lib/pendingScale';
 import {
   loadMeasurementsCache,
   removeCachedMeasurement,
@@ -238,7 +239,7 @@ export default function ViewerScreen() {
     enabled: !!docId,
   });
 
-  const { data: scale } = useQuery({
+  const { data: remoteScale } = useQuery({
     queryKey: ['scale', docId],
     queryFn: () => getDocumentScale(docId),
     enabled: !!docId,
@@ -308,14 +309,14 @@ export default function ViewerScreen() {
     },
   });
 
-  const scaleMutation = useMutation({
-    mutationFn: (input: Parameters<typeof setDocumentScale>[1]) =>
-      setDocumentScale(docId, input),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['scale', docId] });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    },
-  });
+  const handleScaleSynced = useCallback((input: DocumentScaleInput) => {
+    queryClient.setQueryData(['scale', docId], input);
+    void queryClient.invalidateQueries({ queryKey: ['scale', docId] });
+  }, [docId, queryClient]);
+  const { pendingScale, savePendingScale } = usePendingScale(docId, handleScaleSynced);
+  // A locally queued calibration wins over the last server value so new
+  // measurements stay accurate after an offline restart.
+  const scale = pendingScale?.input ?? remoteScale;
 
   const updateMeasurementMutation = useMutation({
     mutationFn: ({
@@ -687,19 +688,26 @@ export default function ViewerScreen() {
     const pixelsPerUnit = calibPixelDist / num;
     setCalibSaving(true);
     try {
-      const savedScale = await scaleMutation.mutateAsync({
+      await savePendingScale({
         pixelsPerUnit,
         unit: 'px',
         realWorldUnit: calibUnit,
         isSet: true,
-      } as Parameters<typeof setDocumentScale>[1]);
+      } as DocumentScaleInput);
       closeCalibrationModal();
-      startPixelMeasurementRecalculation(
-        savedScale.pixelsPerUnit,
-        savedScale.realWorldUnit,
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Alert.alert(
+        'Scale saved locally',
+        'Your scale will sync automatically when the connection returns. New measurements will use it now.',
       );
+      const hasPixelMeasurements = measurements.some(
+        (measurement) => measurement.unit === 'px' || measurement.unit === 'px²',
+      );
+      if (hasPixelMeasurements) {
+        startPixelMeasurementRecalculation(pixelsPerUnit, calibUnit);
+      }
     } catch {
-      Alert.alert('Save failed', 'Could not save the scale. Please try again.');
+      Alert.alert('Save failed', 'Could not save the scale locally. Please try again.');
     } finally {
       setCalibSaving(false);
     }

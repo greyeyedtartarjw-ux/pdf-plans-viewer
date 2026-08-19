@@ -1,5 +1,5 @@
 /**
- * Persistent queue for annotation/measurement operations that failed to reach
+ * Persistent queue for annotation/measurement/scale operations that failed to reach
  * the server (e.g. due to connectivity loss). Backed by localStorage so that
  * the queue survives a page reload.
  *
@@ -11,7 +11,8 @@
  *   have already committed on the server before its response was lost.
  * - Duplicate (id + opType) entries are collapsed to prevent double-sending the
  *   exact same request, but cross-type pairs (create + delete for the same id)
- *   are always preserved.
+ *   are always preserved. Scale updates use one stable ID so the latest
+ *   calibration replaces an older pending calibration.
  * - After any mutation a custom DOM event is dispatched so listening components
  *   can update their displayed count without polling.
  * - Failures in localStorage access are silently swallowed — queue is best-effort.
@@ -96,6 +97,7 @@ export type PendingOp =
   | PendingScaleUpdate;
 
 let lastSequence = 0;
+const flushLanes = new Map<number, Promise<void>>();
 
 /**
  * Allocate a browser-session monotonic sequence at the moment the user starts
@@ -221,9 +223,18 @@ export function addPendingOp(op: PendingOp): void {
 }
 
 /** Remove a single operation after it has been successfully flushed. */
-export function removePendingOp(documentId: number, id: string, opType: PendingOp['opType']): void {
+export function removePendingOp(
+  documentId: number,
+  id: string,
+  opType: PendingOp['opType'],
+  sequence?: number,
+): void {
   const ops = getPendingOps(documentId);
-  const filtered = ops.filter(o => !(o.id === id && o.opType === opType));
+  const filtered = ops.filter(o => !(
+    o.id === id
+    && o.opType === opType
+    && (sequence === undefined || o.sequence === sequence)
+  ));
   setPendingOps(documentId, filtered);
   dispatchQueueChanged(documentId, filtered.length);
 }
@@ -236,29 +247,42 @@ export function removePendingOp(documentId: number, id: string, opType: PendingO
  * caller recognise idempotent HTTP outcomes, such as a duplicate create after
  * the server committed the original request but its response was lost.
  */
-export async function flushPendingOps(
+export function flushPendingOps(
   documentId: number,
   execute: (op: PendingOp) => Promise<void>,
   isAlreadyApplied: (op: PendingOp, error: unknown) => boolean,
 ): Promise<{ succeeded: number; failed: boolean; remaining: number }> {
-  let succeeded = 0;
-  let failed = false;
+  const previousFlush = flushLanes.get(documentId) ?? Promise.resolve();
+  const operation = previousFlush.then(async () => {
+    let succeeded = 0;
+    let failed = false;
 
-  for (const op of getPendingOps(documentId)) {
-    try {
-      await execute(op);
-    } catch (error) {
-      if (!isAlreadyApplied(op, error)) {
-        failed = true;
-        break;
+    for (const op of getPendingOps(documentId)) {
+      try {
+        await execute(op);
+      } catch (error) {
+        if (!isAlreadyApplied(op, error)) {
+          failed = true;
+          break;
+        }
       }
+
+      // An in-flight older request must not remove a newer replacement.
+      removePendingOp(op.documentId, op.id, op.opType, op.sequence);
+      succeeded += 1;
     }
 
-    removePendingOp(op.documentId, op.id, op.opType);
-    succeeded += 1;
-  }
-
-  return { succeeded, failed, remaining: countPendingOps(documentId) };
+    return { succeeded, failed, remaining: countPendingOps(documentId) };
+  });
+  const lane = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  flushLanes.set(documentId, lane);
+  void lane.finally(() => {
+    if (flushLanes.get(documentId) === lane) flushLanes.delete(documentId);
+  });
+  return operation;
 }
 
 /** Remove all pending ops for a document (e.g. after a full successful flush). */
