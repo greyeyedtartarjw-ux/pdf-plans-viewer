@@ -4,28 +4,25 @@ import { Tool, SidebarTab, Scale, Annotation, Measurement, SearchResult, PDFDocu
 interface ViewerState {
   pdfDoc: any | null;
   documentData: PDFDocumentData | null;
-  documentId: number | null; // Server-assigned document ID
+  documentId: number | null;
   currentPage: number;
   totalPages: number;
-
   zoom: number;
   activeTool: Tool;
   sidebarTab: SidebarTab;
   sidebarOpen: boolean;
   highlightColor: string;
-
   scale: Scale;
   annotations: Record<number, Annotation[]>;
   measurements: Record<number, Measurement[]>;
-
   searchQuery: string;
   searchResults: SearchResult[];
   isSearching: boolean;
-
-  isSyncing: boolean; // True while loading remote state
-  shareToken: string | null; // Active share token (read-only mode hint)
-  serverUnreachable: boolean; // True when health check fails
-  saveStatus: 'idle' | 'saving' | 'saved' | 'failed'; // Current save-operation status
+  isSyncing: boolean;
+  shareToken: string | null;
+  serverUnreachable: boolean;
+  saveStatus: 'idle' | 'saving' | 'saved' | 'failed';
+  measurementOrder: string[];
 }
 
 type Action =
@@ -43,6 +40,8 @@ type Action =
   | { type: 'REMOVE_ANNOTATION'; page: number; id: string }
   | { type: 'ADD_MEASUREMENT'; page: number; measurement: Measurement }
   | { type: 'REMOVE_MEASUREMENT'; page: number; id: string }
+  | { type: 'RENAME_MEASUREMENT'; page: number; id: string; label: string }
+  | { type: 'REORDER_MEASUREMENTS'; orderedIds: string[] }
   | { type: 'CLEAR_MEASUREMENTS' }
   | { type: 'SET_SEARCH_STATE'; query: string; results: SearchResult[]; isSearching: boolean }
   | { type: 'SET_SYNCING'; syncing: boolean }
@@ -80,6 +79,7 @@ const initialState: ViewerState = {
   shareToken: null,
   serverUnreachable: false,
   saveStatus: 'idle',
+  measurementOrder: [],
 };
 
 function reducer(state: ViewerState, action: Action): ViewerState {
@@ -91,11 +91,11 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         documentData: action.data,
         totalPages: action.totalPages,
         currentPage: 1,
-        // Clear local state — fresh data will load from API once documentId is set
         annotations: {},
         measurements: {},
         scale: DEFAULT_SCALE,
         documentId: null,
+        measurementOrder: [],
       };
     case 'SET_DOCUMENT_ID':
       return { ...state, documentId: action.documentId };
@@ -118,8 +118,8 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         ...state,
         annotations: {
           ...state.annotations,
-          [action.page]: [...(state.annotations[action.page] || []), action.annotation]
-        }
+          [action.page]: [...(state.annotations[action.page] || []), action.annotation],
+        },
       };
     case 'UPDATE_ANNOTATION':
       return {
@@ -128,35 +128,49 @@ function reducer(state: ViewerState, action: Action): ViewerState {
           ...state.annotations,
           [action.page]: (state.annotations[action.page] || []).map(a =>
             a.id === action.id ? { ...a, data: action.data } : a
-          )
-        }
+          ),
+        },
       };
     case 'REMOVE_ANNOTATION':
       return {
         ...state,
         annotations: {
           ...state.annotations,
-          [action.page]: (state.annotations[action.page] || []).filter(a => a.id !== action.id)
-        }
+          [action.page]: (state.annotations[action.page] || []).filter(a => a.id !== action.id),
+        },
       };
     case 'ADD_MEASUREMENT':
       return {
         ...state,
         measurements: {
           ...state.measurements,
-          [action.page]: [...(state.measurements[action.page] || []), action.measurement]
-        }
+          [action.page]: [...(state.measurements[action.page] || []), action.measurement],
+        },
+        measurementOrder: [...state.measurementOrder, action.measurement.id],
       };
     case 'REMOVE_MEASUREMENT':
       return {
         ...state,
         measurements: {
           ...state.measurements,
-          [action.page]: (state.measurements[action.page] || []).filter(m => m.id !== action.id)
-        }
+          [action.page]: (state.measurements[action.page] || []).filter(m => m.id !== action.id),
+        },
+        measurementOrder: state.measurementOrder.filter(id => id !== action.id),
       };
+    case 'RENAME_MEASUREMENT':
+      return {
+        ...state,
+        measurements: {
+          ...state.measurements,
+          [action.page]: (state.measurements[action.page] || []).map(m =>
+            m.id === action.id ? { ...m, label: action.label } : m
+          ),
+        },
+      };
+    case 'REORDER_MEASUREMENTS':
+      return { ...state, measurementOrder: action.orderedIds };
     case 'CLEAR_MEASUREMENTS':
-      return { ...state, measurements: {} };
+      return { ...state, measurements: {}, measurementOrder: [] };
     case 'SET_SEARCH_STATE':
       return { ...state, searchQuery: action.query, searchResults: action.results, isSearching: action.isSearching };
     case 'SET_SYNCING':
@@ -165,7 +179,8 @@ function reducer(state: ViewerState, action: Action): ViewerState {
       return { ...state, serverUnreachable: action.unreachable };
     case 'SET_SAVE_STATUS':
       return { ...state, saveStatus: action.status };
-    case 'LOAD_REMOTE_STATE':
+    case 'LOAD_REMOTE_STATE': {
+      const allIds = Object.values(action.measurements).flatMap(ms => ms.map(m => m.id));
       return {
         ...state,
         documentId: action.documentId,
@@ -174,7 +189,9 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         scale: action.scale,
         isSyncing: false,
         shareToken: action.shareToken ?? null,
+        measurementOrder: allIds,
       };
+    }
     default:
       return state;
   }
