@@ -49,6 +49,51 @@ export default function PDFPageViewer() {
     return () => mq.removeEventListener('change', handler);
   }, []);
 
+  // ── Save status tracking refs ──────────────────────────────────────────────
+  // saveInFlight:        API calls currently awaiting a server response.
+  // failureQueueCount:   saves queued for retry (not yet retried successfully).
+  // terminalFailureCount: non-retryable (4xx) failures — data not persisted;
+  //                       stays > 0 for the lifetime of the page so the user
+  //                       cannot close thinking "Saved" when a change is lost.
+  //   Priority: (terminalFailureCount|failureQueueCount) > saveInFlight > saved.
+  const saveInFlight = useRef(0);
+  const failureQueueCount = useRef(0);
+  const terminalFailureCount = useRef(0);
+  const savedClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Always-current dispatch ref so the retry callback — set up once on mount —
+  // can dispatch status updates without needing to be recreated.
+  const dispatchRef = useRef(dispatch);
+  useEffect(() => { dispatchRef.current = dispatch; });
+
+  // Single source of truth for save-status transitions. Reads the refs above
+  // and dispatches the appropriate status. Call after mutating any count ref.
+  const recomputeStatus = useCallback(() => {
+    // Cancel any pending idle-clear timer — it may no longer be accurate.
+    if (savedClearTimer.current) {
+      clearTimeout(savedClearTimer.current);
+      savedClearTimer.current = null;
+    }
+    if (terminalFailureCount.current > 0 || failureQueueCount.current > 0) {
+      // Unsaved changes remain — stay on 'failed' regardless of concurrent successes.
+      dispatchRef.current({ type: 'SET_SAVE_STATUS', status: 'failed' });
+    } else if (saveInFlight.current > 0) {
+      dispatchRef.current({ type: 'SET_SAVE_STATUS', status: 'saving' });
+    } else {
+      // All in-flight saves resolved and nothing queued: show 'saved', then clear.
+      dispatchRef.current({ type: 'SET_SAVE_STATUS', status: 'saved' });
+      savedClearTimer.current = setTimeout(() => {
+        dispatchRef.current({ type: 'SET_SAVE_STATUS', status: 'idle' });
+      }, 3000);
+    }
+  }, []); // stable — only reads refs and dispatchRef
+
+  // Keep a ref to saveWithRetry so the window callback (set up once) always
+  // calls the latest version, which captures the current serverUnreachable value.
+  const saveWithRetryRef = useRef<(fn: () => Promise<unknown>, errorTitle: string) => Promise<void>>(
+    async () => {}
+  );
+
   // ── Failed-save queue ─────────────────────────────────────────────────────
   // Stores retry functions for saves that failed due to server being unreachable.
   // Exposed via window callbacks so Shell.tsx can trigger retry when server recovers.
@@ -59,12 +104,24 @@ export default function PDFPageViewer() {
     (window as any)._retryFailedSaves = async () => {
       const toRetry = [...failedSaves.current];
       failedSaves.current = [];
+      // Move items from the failure queue into in-flight so the indicator shows
+      // 'saving' while the retry is in progress.
+      saveInFlight.current += toRetry.length;
+      failureQueueCount.current = Math.max(0, failureQueueCount.current - toRetry.length);
+      recomputeStatus();
+
       const results = await Promise.allSettled(toRetry.map(({ fn }) => fn()));
       // Use original indices so a partial failure requeues only the items that
       // actually failed, not an equal-length prefix of the successful items.
       results.forEach((result, i) => {
-        if (result.status === 'rejected') failedSaves.current.push(toRetry[i]);
+        if (result.status === 'rejected') {
+          failedSaves.current.push(toRetry[i]);
+          failureQueueCount.current++;
+        }
       });
+      saveInFlight.current -= toRetry.length;
+      recomputeStatus(); // reflects the final success/failure state
+
       const failureCount = results.filter(r => r.status === 'rejected').length;
       if (failureCount > 0) {
         toast({
@@ -84,12 +141,16 @@ export default function PDFPageViewer() {
       delete (window as any)._pendingRetryCount;
       delete (window as any)._retryFailedSaves;
     };
-  }, []);
+  }, [recomputeStatus]); // recomputeStatus is stable, so this runs once on mount
 
   // ── Connectivity-aware save helper ────────────────────────────────────────
   // When the server is unreachable, skips the API call, shows an explicit
   // "unable to save" error, and queues the operation for retry when the
   // server comes back. Otherwise retries once on transient failure.
+  //
+  // Save status is derived entirely from saveInFlight and failureQueueCount via
+  // recomputeStatus, ensuring queued failures can never be overwritten by a
+  // concurrent unrelated success.
   const saveWithRetry = useCallback(async (fn: () => Promise<unknown>, errorTitle: string): Promise<void> => {
     if (serverUnreachable) {
       toast({
@@ -98,10 +159,18 @@ export default function PDFPageViewer() {
         description: 'Your work is visible on screen. It will be queued for retry when the connection is restored.',
       });
       failedSaves.current.push({ fn, errorTitle });
+      failureQueueCount.current++;
+      recomputeStatus(); // → 'failed'
       return;
     }
+
+    saveInFlight.current++;
+    recomputeStatus(); // → 'saving'
+
     try {
       await fn();
+      saveInFlight.current--;
+      recomputeStatus(); // → 'saved' if no queued failures remain
     } catch (firstErr) {
       if (isNonRetryable(firstErr)) {
         console.error(errorTitle, firstErr);
@@ -110,14 +179,25 @@ export default function PDFPageViewer() {
           title: errorTitle,
           description: firstErr instanceof Error ? firstErr.message : 'Please check your connection and try again.',
         });
+        // Non-retryable mutations are not queued, but they still represent
+        // local work that is not on the server. Keep the failure visible so a
+        // user cannot close the document after seeing a misleading "Saved".
+        terminalFailureCount.current++;
+        saveInFlight.current--;
+        recomputeStatus();
         return;
       }
       try {
         await fn();
+        saveInFlight.current--;
+        recomputeStatus(); // → 'saved' if no queued failures remain
       } catch (err) {
         console.error(errorTitle, err);
         // Queue for retry — the server may have gone down between our health check and this call
         failedSaves.current.push({ fn, errorTitle });
+        failureQueueCount.current++;
+        saveInFlight.current--;
+        recomputeStatus(); // → 'failed' (queued failure takes priority)
         toast({
           variant: 'destructive',
           title: 'Unable to save — server is unreachable',
@@ -125,7 +205,19 @@ export default function PDFPageViewer() {
         });
       }
     }
-  }, [serverUnreachable]);
+  }, [serverUnreachable, recomputeStatus]);
+
+  // Shell uses this bridge for saves that originate outside the canvas, such
+  // as scale calibration. It deliberately points at the latest helper so its
+  // connectivity state and queue are shared with annotation saves.
+  useEffect(() => {
+    saveWithRetryRef.current = saveWithRetry;
+    (window as any)._saveWithStatus = (fn: () => Promise<unknown>, errorTitle: string) =>
+      saveWithRetryRef.current(fn, errorTitle);
+    return () => {
+      delete (window as any)._saveWithStatus;
+    };
+  }, [saveWithRetry]);
 
   const isDrawing = useRef(false);
   const points = useRef<{ x: number, y: number }[]>([]);

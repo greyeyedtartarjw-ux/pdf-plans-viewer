@@ -25,6 +25,7 @@ interface ViewerState {
   isSyncing: boolean; // True while loading remote state
   shareToken: string | null; // Active share token (read-only mode hint)
   serverUnreachable: boolean; // True when health check fails
+  saveStatus: 'idle' | 'saving' | 'saved' | 'failed'; // Current save-operation status
 }
 
 type Action =
@@ -46,6 +47,7 @@ type Action =
   | { type: 'SET_SEARCH_STATE'; query: string; results: SearchResult[]; isSearching: boolean }
   | { type: 'SET_SYNCING'; syncing: boolean }
   | { type: 'SET_SERVER_UNREACHABLE'; unreachable: boolean }
+  | { type: 'SET_SAVE_STATUS'; status: 'idle' | 'saving' | 'saved' | 'failed' }
   | {
       type: 'LOAD_REMOTE_STATE';
       documentId: number;
@@ -77,6 +79,7 @@ const initialState: ViewerState = {
   isSyncing: false,
   shareToken: null,
   serverUnreachable: false,
+  saveStatus: 'idle',
 };
 
 function reducer(state: ViewerState, action: Action): ViewerState {
@@ -160,6 +163,8 @@ function reducer(state: ViewerState, action: Action): ViewerState {
       return { ...state, isSyncing: action.syncing };
     case 'SET_SERVER_UNREACHABLE':
       return { ...state, serverUnreachable: action.unreachable };
+    case 'SET_SAVE_STATUS':
+      return { ...state, saveStatus: action.status };
     case 'LOAD_REMOTE_STATE':
       return {
         ...state,

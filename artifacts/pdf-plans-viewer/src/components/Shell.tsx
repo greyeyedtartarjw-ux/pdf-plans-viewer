@@ -205,12 +205,22 @@ export default function Shell() {
   // ── Persist scale to API when it changes ──────────────────────────────────
   useEffect(() => {
     if (!documentId || !scale.set) return;
-    setDocumentScale(documentId, {
-      isSet: scale.set,
-      pixelsPerUnit: scale.pixelsPerUnit,
-      unit: scale.unit,
-      realWorldUnit: scale.realWorldUnit,
-    }).catch(console.error);
+    // Scale is a user-editable save just like annotations and measurements.
+    // Route it through PDFPageViewer's shared save helper so the toolbar
+    // reports in-flight, successful, and failed scale saves consistently.
+    const saveWithStatus = (window as any)._saveWithStatus as
+      | ((fn: () => Promise<unknown>, errorTitle: string) => Promise<void>)
+      | undefined;
+    if (!saveWithStatus) return;
+    void saveWithStatus(
+      () => setDocumentScale(documentId, {
+        isSet: scale.set,
+        pixelsPerUnit: scale.pixelsPerUnit,
+        unit: scale.unit,
+        realWorldUnit: scale.realWorldUnit,
+      }),
+      'Scale not saved',
+    );
   }, [documentId, scale]);
 
   // ── Load a PDF file ───────────────────────────────────────────────────────

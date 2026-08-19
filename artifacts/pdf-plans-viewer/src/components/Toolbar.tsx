@@ -34,8 +34,9 @@ import {
   Download,
   FileText,
   Braces,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
-
 interface ToolbarProps {
   onOpenClick: () => void;
   onSnapshot: () => void;
@@ -57,7 +58,7 @@ const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
 
 export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExportCSV, onExportJSON }: ToolbarProps) {
   const { state, dispatch } = useViewerContext();
-  const { zoom, activeTool, currentPage, totalPages, highlightColor, documentId } = state;
+  const { zoom, activeTool, currentPage, totalPages, highlightColor, documentId, saveStatus } = state;
 
   const [shareState, setShareState] = useState<'idle' | 'copying' | 'copied'>('idle');
 
@@ -220,6 +221,36 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExport
             <ZoomIn size={16} />
           </button>
         </div>
+
+        {/* Save status indicator */}
+        {saveStatus !== 'idle' && (
+          <>
+            <div className="w-px h-6 bg-sidebar-border" />
+            <div
+              className={`flex items-center gap-1.5 text-xs font-medium px-2 py-1 rounded transition-all ${
+                saveStatus === 'saving'
+                  ? 'text-sidebar-foreground/70'
+                  : saveStatus === 'saved'
+                  ? 'text-green-400'
+                  : 'text-destructive'
+              }`}
+              title={
+                saveStatus === 'saving'
+                  ? 'Saving changes…'
+                  : saveStatus === 'saved'
+                  ? 'All changes saved'
+                  : 'Save failed — check your connection'
+              }
+            >
+              {saveStatus === 'saving' && <Loader2 size={13} className="animate-spin" />}
+              {saveStatus === 'saved' && <Check size={13} />}
+              {saveStatus === 'failed' && <AlertCircle size={13} />}
+              <span>
+                {saveStatus === 'saving' ? 'Saving…' : saveStatus === 'saved' ? 'Saved' : 'Save failed'}
+              </span>
+            </div>
+          </>
+        )}
 
         <div className="w-px h-6 bg-sidebar-border" />
 
