@@ -26,40 +26,9 @@ function isNonRetryable(err: unknown): boolean {
   return false;
 }
 
-/**
- * Attempt `fn` once; on failure, retry once more unless the error is a
- * non-retryable HTTP status (any 4xx except 429). If the final attempt also
- * fails, show a destructive toast with `errorTitle` and the caught message.
- */
-async function saveWithRetry<T>(fn: () => Promise<T>, errorTitle: string): Promise<void> {
-  try {
-    await fn();
-  } catch (firstErr) {
-    if (isNonRetryable(firstErr)) {
-      console.error(errorTitle, firstErr);
-      toast({
-        variant: 'destructive',
-        title: errorTitle,
-        description: firstErr instanceof Error ? firstErr.message : 'Please check your connection and try again.',
-      });
-      return;
-    }
-    try {
-      await fn();
-    } catch (err) {
-      console.error(errorTitle, err);
-      toast({
-        variant: 'destructive',
-        title: errorTitle,
-        description: err instanceof Error ? err.message : 'Please check your connection and try again.',
-      });
-    }
-  }
-}
-
 export default function PDFPageViewer() {
   const { state, dispatch } = useViewerContext();
-  const { pdfDoc, currentPage, zoom, activeTool, highlightColor, scale, annotations, measurements, documentId } = state;
+  const { pdfDoc, currentPage, zoom, activeTool, highlightColor, scale, annotations, measurements, documentId, serverUnreachable } = state;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -69,6 +38,84 @@ export default function PDFPageViewer() {
   const [isRenderLoading, setIsRenderLoading] = useState(false);
   const [areaHint, setAreaHint] = useState<string | null>(null);
   const areaHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Failed-save queue ─────────────────────────────────────────────────────
+  // Stores retry functions for saves that failed due to server being unreachable.
+  // Exposed via window callbacks so Shell.tsx can trigger retry when server recovers.
+  const failedSaves = useRef<Array<{ fn: () => Promise<unknown>; errorTitle: string }>>([]);
+
+  useEffect(() => {
+    (window as any)._pendingRetryCount = () => failedSaves.current.length;
+    (window as any)._retryFailedSaves = async () => {
+      const toRetry = [...failedSaves.current];
+      failedSaves.current = [];
+      const results = await Promise.allSettled(toRetry.map(({ fn }) => fn()));
+      // Use original indices so a partial failure requeues only the items that
+      // actually failed, not an equal-length prefix of the successful items.
+      results.forEach((result, i) => {
+        if (result.status === 'rejected') failedSaves.current.push(toRetry[i]);
+      });
+      const failureCount = results.filter(r => r.status === 'rejected').length;
+      if (failureCount > 0) {
+        toast({
+          variant: 'destructive',
+          title: 'Some changes could not be saved',
+          description: `${failureCount} item(s) still failed. Check your connection.`,
+        });
+        throw new Error('Partial retry failure');
+      } else {
+        toast({
+          title: 'Changes saved',
+          description: 'All previously unsaved changes have been saved successfully.',
+        });
+      }
+    };
+    return () => {
+      delete (window as any)._pendingRetryCount;
+      delete (window as any)._retryFailedSaves;
+    };
+  }, []);
+
+  // ── Connectivity-aware save helper ────────────────────────────────────────
+  // When the server is unreachable, skips the API call, shows an explicit
+  // "unable to save" error, and queues the operation for retry when the
+  // server comes back. Otherwise retries once on transient failure.
+  const saveWithRetry = useCallback(async (fn: () => Promise<unknown>, errorTitle: string): Promise<void> => {
+    if (serverUnreachable) {
+      toast({
+        variant: 'destructive',
+        title: 'Unable to save — server is unreachable',
+        description: 'Your work is visible on screen. It will be queued for retry when the connection is restored.',
+      });
+      failedSaves.current.push({ fn, errorTitle });
+      return;
+    }
+    try {
+      await fn();
+    } catch (firstErr) {
+      if (isNonRetryable(firstErr)) {
+        console.error(errorTitle, firstErr);
+        toast({
+          variant: 'destructive',
+          title: errorTitle,
+          description: firstErr instanceof Error ? firstErr.message : 'Please check your connection and try again.',
+        });
+        return;
+      }
+      try {
+        await fn();
+      } catch (err) {
+        console.error(errorTitle, err);
+        // Queue for retry — the server may have gone down between our health check and this call
+        failedSaves.current.push({ fn, errorTitle });
+        toast({
+          variant: 'destructive',
+          title: 'Unable to save — server is unreachable',
+          description: 'Your work is visible on screen and has been queued for retry.',
+        });
+      }
+    }
+  }, [serverUnreachable]);
 
   const isDrawing = useRef(false);
   const points = useRef<{ x: number, y: number }[]>([]);
@@ -481,13 +528,16 @@ export default function PDFPageViewer() {
           };
           dispatch({ type: 'ADD_ANNOTATION', page: currentPage, annotation });
 
+          // Capture serialised data NOW before currentShape is nulled below.
+          // The closure must close over an immutable value so retry works correctly.
+          const fabricData = currentShape.current.toObject(['id']);
           if (documentId) {
             saveWithRetry(
               () => createAnnotation(documentId, {
                 id,
                 pageNumber: currentPage,
                 type: 'highlight',
-                fabricData: currentShape.current!.toObject(['id']),
+                fabricData,
               }),
               'Highlight not saved',
             );
@@ -609,7 +659,7 @@ export default function PDFPageViewer() {
       fCanvas.off('mouse:up', handleMouseUp);
       fCanvas.off('mouse:dblclick', handleDblClick);
     };
-  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing]);
+  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing, saveWithRetry]);
 
   // 5. Delete / Escape key handlers
   useEffect(() => {
@@ -671,7 +721,7 @@ export default function PDFPageViewer() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [fCanvas, activeTool, currentPage, dispatch, documentId, cancelAreaDrawing]);
+  }, [fCanvas, activeTool, currentPage, dispatch, documentId, cancelAreaDrawing, saveWithRetry]);
 
   return (
     <div className="relative shadow-xl bg-white border border-border/50 select-none m-auto transition-transform origin-top-left" ref={containerRef}>

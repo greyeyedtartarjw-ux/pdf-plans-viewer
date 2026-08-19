@@ -18,6 +18,15 @@ import {
   getHealthCheckQueryKey,
 } from '@workspace/api-client-react';
 import type { Scale, Annotation, Measurement } from '../types';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from './ui/dialog';
+import { Button } from './ui/button';
 
 // Map API annotation → local Annotation shape
 function mapApiAnnotations(apiAnns: Awaited<ReturnType<typeof listAnnotations>>): Record<number, Annotation[]> {
@@ -58,9 +67,12 @@ function mapApiScale(apiScale: Awaited<ReturnType<typeof getDocumentScale>>): Sc
   };
 }
 
+/** Tools that are passive (viewing/navigating). Active drawing tools are everything else. */
+const PASSIVE_TOOLS = new Set(['pan', 'select']);
+
 export default function Shell() {
   const { state, dispatch } = useViewerContext();
-  const { pdfDoc, scale, documentId } = state;
+  const { pdfDoc, scale, documentId, activeTool } = state;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showScaleDialog, setShowScaleDialog] = useState(false);
@@ -81,6 +93,78 @@ export default function Shell() {
     if (serverUnreachable || serverReachable) setServerChecked(true);
   }, [serverUnreachable, serverReachable]);
   const showServerWarning = serverChecked && serverUnreachable;
+
+  // ── Sync connectivity state into ViewerContext ─────────────────────────────
+  const prevServerUnreachable = useRef<boolean>(false);
+  useEffect(() => {
+    if (!serverChecked) return;
+    dispatch({ type: 'SET_SERVER_UNREACHABLE', unreachable: !!serverUnreachable });
+    prevServerUnreachable.current = !!serverUnreachable;
+  }, [serverUnreachable, serverChecked, dispatch]);
+
+  // ── Modal: server dropped while user is actively drawing ──────────────────
+  const [showOutageModal, setShowOutageModal] = useState(false);
+  const wasDrawingRef = useRef(false);
+
+  // Detect transition: reachable → unreachable while in a drawing tool
+  useEffect(() => {
+    if (!serverChecked) return;
+    if (serverUnreachable && !PASSIVE_TOOLS.has(activeTool)) {
+      // Server just went down (or we confirmed it's down) during active drawing
+      setShowOutageModal(true);
+      wasDrawingRef.current = true;
+    }
+  // We deliberately only react when serverUnreachable changes, not activeTool
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverUnreachable, serverChecked]);
+
+  // Dismiss outage modal when server comes back
+  useEffect(() => {
+    if (serverReachable && showOutageModal) {
+      setShowOutageModal(false);
+    }
+  }, [serverReachable, showOutageModal]);
+
+  // ── Retry failed saves when server comes back ──────────────────────────────
+  const [showRetryBanner, setShowRetryBanner] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retrySuccess, setRetrySuccess] = useState<boolean | null>(null);
+
+  // When server recovers after an outage, check if there are pending retries
+  useEffect(() => {
+    if (serverReachable && wasDrawingRef.current) {
+      // Check if PDFPageViewer registered any failed saves
+      const pendingCount = (window as any)._pendingRetryCount?.() ?? 0;
+      if (pendingCount > 0) {
+        setShowRetryBanner(true);
+      }
+      wasDrawingRef.current = false;
+    }
+  }, [serverReachable]);
+
+  const handleRetry = useCallback(async () => {
+    const retryFn = (window as any)._retryFailedSaves;
+    if (!retryFn) {
+      setShowRetryBanner(false);
+      return;
+    }
+    setIsRetrying(true);
+    setRetrySuccess(null);
+    try {
+      await retryFn();
+      setRetrySuccess(true);
+    } catch {
+      setRetrySuccess(false);
+    } finally {
+      setIsRetrying(false);
+    }
+  }, []);
+
+  // Switch to pan tool when user dismisses outage modal
+  const handleOutageModalClose = useCallback(() => {
+    setShowOutageModal(false);
+    dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
+  }, [dispatch]);
 
   // Expose callback for scale tool
   useEffect(() => {
@@ -232,6 +316,36 @@ export default function Shell() {
             </div>
           )}
 
+          {/* Server-recovered retry banner */}
+          {showRetryBanner && !showServerWarning && (
+            <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-xs text-amber-800 font-medium flex justify-between items-center">
+              <span>
+                {retrySuccess === true
+                  ? '✓ Previously unsaved changes have been saved successfully.'
+                  : retrySuccess === false
+                  ? '✗ Some changes could not be saved. You may want to reload the page.'
+                  : '⚠ Connection restored — some changes may not have saved while the server was down.'}
+              </span>
+              <div className="flex gap-2 ml-4 shrink-0">
+                {retrySuccess === null && (
+                  <button
+                    onClick={handleRetry}
+                    disabled={isRetrying}
+                    className="underline hover:no-underline disabled:opacity-50"
+                  >
+                    {isRetrying ? 'Retrying…' : 'Retry saves'}
+                  </button>
+                )}
+                <button
+                  onClick={() => { setShowRetryBanner(false); setRetrySuccess(null); }}
+                  className="opacity-70 hover:opacity-100 text-base leading-none"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Share / status banner */}
           {shareMsg && (
             <div className="bg-primary/10 border-b border-primary/20 px-4 py-2 text-xs text-primary font-medium flex justify-between items-center">
@@ -270,6 +384,36 @@ export default function Shell() {
       {showScaleDialog && (
         <ScaleDialog onClose={() => setShowScaleDialog(false)} pixelDistance={pixelDistanceToScale} />
       )}
+
+      {/* Outage modal — shown when server drops while user is actively drawing */}
+      <Dialog open={showOutageModal} onOpenChange={(open) => { if (!open) handleOutageModalClose(); }}>
+        <DialogContent className="sm:max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <span>⚠</span> Server unreachable
+            </DialogTitle>
+            <DialogDescription className="pt-2 space-y-2">
+              <p>
+                The connection to the server was lost while you were drawing. <strong>Any work you complete right now won't be saved</strong> until the server comes back.
+              </p>
+              <p>
+                Your annotations are still visible on screen — they will remain safe as long as you don't reload the page.
+              </p>
+              <p className="text-foreground/80 font-medium">
+                We recommend switching to Pan mode and waiting for connectivity to restore before continuing.
+              </p>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={() => setShowOutageModal(false)}>
+              Continue drawing (unsaved risk)
+            </Button>
+            <Button variant="destructive" onClick={handleOutageModalClose}>
+              Switch to Pan &amp; wait
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Print styles */}
       <style>{`
