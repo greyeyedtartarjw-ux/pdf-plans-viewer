@@ -2,14 +2,10 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import { useViewerContext } from '../store/ViewerContext';
 import { Toolbar } from './Toolbar';
 import { Sidebar } from './Sidebar';
-import PDFPageViewer from './PDFPageViewer';
 import EmptyState from './EmptyState';
-import ScaleDialog from './ScaleDialog';
-import { loadPDF } from '../lib/pdfUtils';
 import { getDocumentContentHash, getLegacyDocumentKey } from '../lib/documentIdentity';
 import { exportMeasurementsCSV, exportBackupJSON } from '../lib/exportUtils';
 import { mergePendingState } from '../lib/pendingState';
-import html2canvas from 'html2canvas';
 import {
   upsertDocument,
   listAnnotations,
@@ -51,6 +47,9 @@ import {
   DialogFooter,
 } from './ui/dialog';
 import { Button } from './ui/button';
+
+const PDFPageViewer = React.lazy(() => import('./PDFPageViewer'));
+const ScaleDialog = React.lazy(() => import('./ScaleDialog'));
 
 // Map API annotation → local Annotation shape
 function mapApiAnnotations(apiAnns: Awaited<ReturnType<typeof listAnnotations>>): Record<number, Annotation[]> {
@@ -495,6 +494,9 @@ export default function Shell() {
   const handleFileSelect = useCallback(async (file: File) => {
     let resolvedDocumentId: number | null = null;
     try {
+      // PDF.js is only needed after the user chooses a plan. Keeping it out of
+      // the initial route makes the empty viewer responsive on slow connections.
+      const { loadPDF } = await import('../lib/pdfUtils');
       const doc = await loadPDF(file);
       const hash = await getDocumentContentHash(file);
       // Name-and-size mappings from older releases can collide across
@@ -555,6 +557,9 @@ export default function Shell() {
     const viewerElement = document.getElementById('pdf-viewer-area');
     if (!viewerElement) return;
     try {
+      // Snapshotting is optional and html2canvas is comparatively expensive,
+      // so it should not delay opening or viewing a plan.
+      const { default: html2canvas } = await import('html2canvas');
       const canvas = await html2canvas(viewerElement, { scale: 2, backgroundColor: '#ffffff' });
       const url = canvas.toDataURL('image/png');
       const a = document.createElement('a');
@@ -668,7 +673,15 @@ export default function Shell() {
           ) : (
             <div id="pdf-scroll-container" className="flex-1 overflow-auto bg-muted p-8 print:p-0 print:bg-white print:overflow-visible">
               <div id="pdf-viewer-area" className="mx-auto w-max print:shadow-none print:border-none">
-                <PDFPageViewer />
+                <React.Suspense
+                  fallback={(
+                    <div className="flex min-h-[50vh] min-w-[50vw] items-center justify-center text-muted-foreground text-sm">
+                      Loading plan viewer…
+                    </div>
+                  )}
+                >
+                  <PDFPageViewer />
+                </React.Suspense>
               </div>
             </div>
           )}
@@ -696,11 +709,13 @@ export default function Shell() {
       </div>
 
       {showScaleDialog && (
-        <ScaleDialog
-          onClose={() => setShowScaleDialog(false)}
-          pixelDistance={pixelDistanceToScale}
-          onScaleSaved={handleScaleSaved}
-        />
+        <React.Suspense fallback={null}>
+          <ScaleDialog
+            onClose={() => setShowScaleDialog(false)}
+            pixelDistance={pixelDistanceToScale}
+            onScaleSaved={handleScaleSaved}
+          />
+        </React.Suspense>
       )}
 
       {/* Outage modal — shown when server drops while user is actively drawing */}

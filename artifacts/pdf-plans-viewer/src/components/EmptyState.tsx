@@ -1,6 +1,4 @@
 import React, { useRef, useState } from 'react';
-import { useViewerContext } from '../store/ViewerContext';
-import { loadPDF } from '../lib/pdfUtils';
 import { UploadCloud, FileDown, Plus } from 'lucide-react';
 
 export default function EmptyState({ onFileSelect }: { onFileSelect: (file: File) => void }) {
