@@ -100,11 +100,11 @@ function assertNoRequests(requests, forbiddenChunks, stage) {
 }
 
 function createFixturePdf() {
-  const pageContents = 'BT\n/F1 24 Tf\n72 720 Td\n(Plan render check) Tj\nET\n';
+  const pageContents = 'BT\n/F1 24 Tf\n72 2280 Td\n(Large plan navigation check) Tj\nET\n';
   const objects = [
     '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
     '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n',
+    '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2800 2400] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n',
     `4 0 obj\n<< /Length ${Buffer.byteLength(pageContents, 'utf8')} >>\nstream\n${pageContents}endstream\nendobj\n`,
     '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
   ];
@@ -152,8 +152,44 @@ async function createStaticServer(root) {
       });
       return;
     }
-    if (request.method === 'GET' && /^\/api\/documents\/1\/(?:annotations|measurements)$/.test(requestPath)) {
-      sendJson(response, []);
+    if (request.method === 'GET' && requestPath === '/api/documents/1/annotations') {
+      sendJson(response, [{
+        id: 'release-check-highlight',
+        documentId: 1,
+        pageNumber: 1,
+        type: 'highlight',
+        fabricData: {
+          type: 'Rect',
+          left: 800,
+          top: 700,
+          width: 100,
+          height: 80,
+          fill: '#ff0000',
+          viewerZoom: 1,
+        },
+      }]);
+      return;
+    }
+    if (request.method === 'GET' && requestPath === '/api/documents/1/measurements') {
+      sendJson(response, [{
+        id: 'release-check-measurement',
+        documentId: 1,
+        pageNumber: 1,
+        type: 'distance',
+        label: '100 px',
+        realWorldValue: 100,
+        unit: 'px',
+        points: [{ x: 1200, y: 1000 }, { x: 1300, y: 1080 }],
+        fabricData: {
+          type: 'Rect',
+          left: 1200,
+          top: 1000,
+          width: 100,
+          height: 80,
+          fill: '#0000ff',
+          viewerZoom: 1,
+        },
+      }]);
       return;
     }
     if (request.method === 'GET' && requestPath === '/api/documents/1/scale') {
@@ -457,9 +493,174 @@ async function runChromiumSlowNetworkBrowserCheck({ staticServer, fixturePath })
       throw new Error(`Chromium: the plan viewer took ${viewerShownInMs}ms to appear on the throttled connection.`);
     }
 
+    await waitForCondition(
+      client,
+      `(() => {
+        const page = document.querySelector('[data-page-rendered="true"]');
+        if (!page) return false;
+        const hasColorAt = (sceneX, sceneY, color) => [...page.querySelectorAll('canvas')].some((canvas) => {
+          const rect = canvas.getBoundingClientRect();
+          if (!rect.width || !rect.height) return false;
+          const context = canvas.getContext('2d');
+          if (!context) return false;
+          const x = Math.floor(sceneX * canvas.width / rect.width);
+          const y = Math.floor(sceneY * canvas.height / rect.height);
+          const pixel = context.getImageData(x, y, 1, 1).data;
+          return color === 'red'
+            ? pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40
+            : pixel[2] > 220 && pixel[0] < 40 && pixel[1] < 40;
+        });
+        return hasColorAt(850, 740, 'red') && hasColorAt(1250, 1040, 'blue');
+      })()`,
+      'the restored annotation and measurement overlays',
+    );
+
     await delay(750);
     assertViewerRequests(requests, selectionStartedAt, 'Chromium');
-    logPassedBrowserCheck('Chromium', viewerShownInMs);
+    const navigationTarget = await client.send('Runtime.evaluate', {
+      expression: `(() => {
+        const page = document.querySelector('[data-page-rendered="true"]');
+        const scroller = document.querySelector('#pdf-scroll-container');
+        if (!page || !scroller) return null;
+        const pageRect = page.getBoundingClientRect();
+        const scrollerRect = scroller.getBoundingClientRect();
+        return {
+          x: Math.min(pageRect.right - 80, Math.max(pageRect.left + 260, scrollerRect.left + 120)),
+          y: Math.min(pageRect.bottom - 80, Math.max(pageRect.top + 260, scrollerRect.top + 120)),
+        };
+      })()`,
+      returnByValue: true,
+    });
+    const target = navigationTarget.result.value;
+    if (!target) throw new Error('Could not find a rendered plan for navigation checks.');
+
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: target.x,
+      y: target.y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: target.x - 180,
+      y: target.y - 160,
+      button: 'left',
+      buttons: 1,
+    });
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: target.x - 180,
+      y: target.y - 160,
+      button: 'left',
+      buttons: 0,
+      clickCount: 1,
+    });
+
+    await delay(200);
+    const panPosition = await client.send('Runtime.evaluate', {
+      expression: `(() => {
+        const scroller = document.querySelector("#pdf-scroll-container");
+        const page = document.querySelector('[data-page-rendered="true"]');
+        return scroller ? {
+          scrollLeft: scroller.scrollLeft,
+          scrollTop: scroller.scrollTop,
+          scrollWidth: scroller.scrollWidth,
+          scrollHeight: scroller.scrollHeight,
+          clientWidth: scroller.clientWidth,
+          clientHeight: scroller.clientHeight,
+          cursor: page?.style.cursor,
+        } : null;
+      })()`,
+      returnByValue: true,
+    });
+    const panned = panPosition.result.value;
+    if (!panned || panned.scrollLeft <= 100 || panned.scrollTop <= 100 || panned.cursor !== 'grab') {
+      throw new Error(`Grab-tool panning did not move both axes: ${JSON.stringify(panned)}.`);
+    }
+
+    const focalBeforeZoom = await client.send('Runtime.evaluate', {
+      expression: `(() => {
+        const page = document.querySelector('[data-page-rendered="true"]');
+        const scroller = document.querySelector('#pdf-scroll-container');
+        if (!page || !scroller) return null;
+        const pageRect = page.getBoundingClientRect();
+        const scrollerRect = scroller.getBoundingClientRect();
+        const zoom = Number(document.querySelector('select')?.value ?? 1);
+        const x = Math.min(pageRect.right - 100, Math.max(pageRect.left + 300, scrollerRect.left + 180));
+        const y = Math.min(pageRect.bottom - 100, Math.max(pageRect.top + 300, scrollerRect.top + 180));
+        return { x, y, sceneX: (x - pageRect.left) / zoom, sceneY: (y - pageRect.top) / zoom };
+      })()`,
+      returnByValue: true,
+    });
+    const focal = focalBeforeZoom.result.value;
+    if (!focal) throw new Error('Could not calculate a cursor focal point for wheel zoom.');
+
+    await client.send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x: focal.x,
+      y: focal.y,
+      deltaX: 0,
+      deltaY: -120,
+    });
+    await waitForCondition(
+      client,
+      `document.querySelector('select')?.value === '1.25'`,
+      'the cursor-focused wheel zoom level',
+    );
+    await waitForCondition(
+      client,
+      `(() => {
+        const page = document.querySelector('[data-page-rendered="true"]');
+        if (!page) return false;
+        const rect = page.getBoundingClientRect();
+        const sceneX = (${focal.x} - rect.left) / 1.25;
+        const sceneY = (${focal.y} - rect.top) / 1.25;
+        return Math.abs(sceneX - ${focal.sceneX}) < 4 && Math.abs(sceneY - ${focal.sceneY}) < 4;
+      })()`,
+      'wheel zoom focal-point stability',
+    );
+    await waitForCondition(
+      client,
+      `(() => {
+        const page = document.querySelector('[data-page-rendered="true"]');
+        if (!page) return false;
+        const hasColorAt = (sceneX, sceneY, color) => [...page.querySelectorAll('canvas')].some((canvas) => {
+          const rect = canvas.getBoundingClientRect();
+          if (!rect.width || !rect.height) return false;
+          const context = canvas.getContext('2d');
+          if (!context) return false;
+          const x = Math.floor(sceneX * 1.25 * canvas.width / rect.width);
+          const y = Math.floor(sceneY * 1.25 * canvas.height / rect.height);
+          const pixel = context.getImageData(x, y, 1, 1).data;
+          return color === 'red'
+            ? pixel[0] > 220 && pixel[1] < 40 && pixel[2] < 40
+            : pixel[2] > 220 && pixel[0] < 40 && pixel[1] < 40;
+        });
+        return hasColorAt(850, 740, 'red') && hasColorAt(1250, 1040, 'blue');
+      })()`,
+      'aligned annotation and measurement overlays after wheel zoom',
+    );
+
+    for (let index = 0; index < 16; index += 1) {
+      await client.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel',
+        x: focal.x,
+        y: focal.y,
+        deltaX: 0,
+        deltaY: 120,
+      });
+    }
+    await waitForCondition(
+      client,
+      `document.querySelector('select')?.value === '0.25'`,
+      'the minimum wheel zoom bound',
+    );
+
+    console.log(
+      `Slow-network browser check passed in Chromium: full-plan pan/zoom navigation worked and the viewer appeared in ${viewerShownInMs}ms.`,
+    );
   } finally {
     client.close();
     browser.kill('SIGKILL');

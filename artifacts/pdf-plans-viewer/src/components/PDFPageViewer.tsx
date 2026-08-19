@@ -53,6 +53,20 @@ export default function PDFPageViewer() {
   const areaHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const [isAreaDrawingActive, setIsAreaDrawingActive] = useState(false);
+  const zoomRef = useRef(zoom);
+  const renderedZoomRef = useRef(zoom);
+  const panState = useRef<{ x: number; y: number } | null>(null);
+  const pendingZoomFocal = useRef<{
+    token: number;
+    page: number;
+    expectedZoom: number;
+    sceneX: number;
+    sceneY: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const zoomFocalToken = useRef(0);
+  zoomRef.current = zoom;
 
   useEffect(() => {
     const mq = window.matchMedia('(pointer: coarse)');
@@ -417,6 +431,27 @@ export default function PDFPageViewer() {
             const newFCanvas = initFabricCanvas(fabricCanvasRef.current);
             setFCanvas(newFCanvas);
           }
+
+           const focal = pendingZoomFocal.current;
+           renderedZoomRef.current = zoom;
+           if (focal && focal.page === currentPage && focal.expectedZoom === zoom) {
+             requestAnimationFrame(() => {
+               if (!mounted || pendingZoomFocal.current?.token !== focal.token) return;
+               const scroller = document.getElementById('pdf-scroll-container');
+               const pageElement = containerRef.current;
+               if (!scroller || !pageElement) return;
+
+               const scrollerRect = scroller.getBoundingClientRect();
+               const pageRect = pageElement.getBoundingClientRect();
+               const pageOriginX = pageRect.left - scrollerRect.left + scroller.scrollLeft;
+               const pageOriginY = pageRect.top - scrollerRect.top + scroller.scrollTop;
+               const targetScrollLeft = pageOriginX + focal.sceneX * zoom - (focal.clientX - scrollerRect.left);
+               const targetScrollTop = pageOriginY + focal.sceneY * zoom - (focal.clientY - scrollerRect.top);
+               scroller.scrollLeft = Math.max(0, Math.min(targetScrollLeft, scroller.scrollWidth - scroller.clientWidth));
+               scroller.scrollTop = Math.max(0, Math.min(targetScrollTop, scroller.scrollHeight - scroller.clientHeight));
+               pendingZoomFocal.current = null;
+             });
+           }
         }
       } catch (err) {
         console.error('Render failed', err);
@@ -444,6 +479,7 @@ export default function PDFPageViewer() {
       currentPage,
       (serialized) => fabric.util.enlivenObjects(serialized),
       () => cancelled,
+      zoom,
     ).catch((error) => {
       if (!cancelled) console.error('Could not restore saved page objects', error);
     });
@@ -451,24 +487,61 @@ export default function PDFPageViewer() {
     return () => {
       cancelled = true;
     };
-  }, [fCanvas, currentPage, remoteStateRevision]);
+  }, [fCanvas, currentPage, remoteStateRevision, zoom]);
 
   // 3. Handle Tool Changes
   useEffect(() => {
     if (!fCanvas) return;
     applyToolState(fCanvas, activeTool);
+    if (containerRef.current) {
+      containerRef.current.style.cursor = activeTool === 'pan' ? 'grab' : '';
+    }
   }, [activeTool, fCanvas]);
 
   // 4. Canvas Events
   useEffect(() => {
     if (!fCanvas) return;
 
+    const getClientPoint = (event: Event) => {
+      if (!('clientX' in event) || !('clientY' in event)) return null;
+      return {
+        x: (event as MouseEvent).clientX,
+        y: (event as MouseEvent).clientY,
+      };
+    };
+
+    const endPan = () => {
+      if (!panState.current) return;
+      panState.current = null;
+      isDrawing.current = false;
+      fCanvas.setCursor('grab');
+      if (containerRef.current) containerRef.current.style.cursor = 'grab';
+    };
+
+    const handlePanMove = (event: MouseEvent | PointerEvent) => {
+      if (activeTool !== 'pan' || !panState.current) return;
+      const point = getClientPoint(event);
+      const scroller = document.getElementById('pdf-scroll-container');
+      if (!point || !scroller) return;
+      scroller.scrollLeft += panState.current.x - point.x;
+      scroller.scrollTop += panState.current.y - point.y;
+      panState.current = point;
+      event.preventDefault();
+    };
+
     const handleMouseDown = (o: fabric.TEvent) => {
       const pointer = fCanvas.getScenePoint(o.e as any);
 
       if (activeTool === 'pan') {
+        const event = o.e as MouseEvent;
+        if (typeof event.button === 'number' && event.button !== 0) return;
+        const point = getClientPoint(event);
+        if (!point) return;
+        panState.current = point;
         isDrawing.current = true;
         fCanvas.setCursor('grabbing');
+        if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
+        event.preventDefault();
       } else if (activeTool === 'measure-distance' || activeTool === 'set-scale') {
         if (!isDrawing.current) {
           isDrawing.current = true;
@@ -516,6 +589,7 @@ export default function PDFPageViewer() {
 
             const id = generateId();
             group.set('id', id as any);
+            group.set('viewerZoom', zoom as any);
 
             const measurement = {
               id,
@@ -525,12 +599,12 @@ export default function PDFPageViewer() {
               realWorldValue: mData.value,
               unit: mData.unit,
               points: [p1, p2],
-              data: group.toObject(['id'] as any),
+              data: group.toObject(['id', 'viewerZoom'] as any),
             };
             dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
 
             if (documentId) {
-              const fabricData = group.toObject(['id'] as any) as unknown as Record<string, unknown>;
+              const fabricData = group.toObject(['id', 'viewerZoom'] as any) as unknown as Record<string, unknown>;
               saveWithRetry(
                 () => createMeasurement(documentId, {
                   id,
@@ -622,6 +696,7 @@ export default function PDFPageViewer() {
         });
         const id = generateId();
         text.set('id', id as any);
+        text.set('viewerZoom', zoom as any);
         fCanvas.add(text);
         fCanvas.setActiveObject(text);
         text.enterEditing();
@@ -629,7 +704,7 @@ export default function PDFPageViewer() {
 
         // Save on exit editing
         text.on('editing:exited', () => {
-          const fabricData = text.toObject() as unknown as Record<string, unknown>;
+          const fabricData = text.toObject(['id', 'viewerZoom'] as any) as unknown as Record<string, unknown>;
           const annotation = {
             id,
             pageNumber: currentPage,
@@ -666,12 +741,9 @@ export default function PDFPageViewer() {
       if (!isDrawing.current) return;
       const pointer = fCanvas.getScenePoint(o.e as any);
 
-      if (activeTool === 'pan' && containerRef.current && o.e instanceof MouseEvent) {
-        const scroller = containerRef.current.parentElement;
-        if (scroller) {
-          scroller.scrollLeft -= o.e.movementX;
-          scroller.scrollTop -= o.e.movementY;
-        }
+      if (activeTool === 'pan') {
+        // Viewport-level pointer listeners continue this drag even after the
+        // pointer leaves Fabric's canvas.
       } else if ((activeTool === 'measure-distance' || activeTool === 'set-scale') && currentShape.current) {
         const line = currentShape.current as fabric.Line;
         line.set({ x2: pointer.x, y2: pointer.y });
@@ -776,26 +848,26 @@ export default function PDFPageViewer() {
 
     const handleMouseUp = () => {
       if (activeTool === 'pan') {
-        isDrawing.current = false;
-        fCanvas.setCursor('grab');
+        endPan();
       } else if (activeTool === 'highlight' && isDrawing.current) {
         isDrawing.current = false;
         if (currentShape.current) {
           const id = generateId();
           currentShape.current.set('id', id as any);
+          currentShape.current.set('viewerZoom', zoom as any);
           currentShape.current.set('selectable', false);
 
           const annotation = {
             id,
             pageNumber: currentPage,
             type: 'highlight' as const,
-            data: currentShape.current.toObject(['id']),
+            data: currentShape.current.toObject(['id', 'viewerZoom']),
           };
           dispatch({ type: 'ADD_ANNOTATION', page: currentPage, annotation });
 
           // Capture serialised data NOW before currentShape is nulled below.
           // The closure must close over an immutable value so retry works correctly.
-          const fabricData = currentShape.current.toObject(['id']);
+          const fabricData = currentShape.current.toObject(['id', 'viewerZoom']);
           if (documentId) {
             saveWithRetry(
               () => createAnnotation(documentId, {
@@ -887,6 +959,7 @@ export default function PDFPageViewer() {
 
       const id = generateId();
       group.set('id', id as any);
+      group.set('viewerZoom', zoom as any);
 
       const measurement = {
         id,
@@ -896,12 +969,12 @@ export default function PDFPageViewer() {
         realWorldValue: mData.value,
         unit: mData.unit,
         points: pts,
-        data: group.toObject(['id'] as any),
+        data: group.toObject(['id', 'viewerZoom'] as any),
       };
       dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
 
       if (documentId) {
-        const areaFabricData = group.toObject(['id'] as any) as unknown as Record<string, unknown>;
+        const areaFabricData = group.toObject(['id', 'viewerZoom'] as any) as unknown as Record<string, unknown>;
         saveWithRetry(
           () => createMeasurement(documentId, {
             id,
@@ -943,14 +1016,82 @@ export default function PDFPageViewer() {
     fCanvas.on('mouse:move', handleMouseMove);
     fCanvas.on('mouse:up', handleMouseUp);
     fCanvas.on('mouse:dblclick', handleDblClick);
+    window.addEventListener('pointermove', handlePanMove, true);
+    window.addEventListener('mousemove', handlePanMove, true);
+    window.addEventListener('pointerup', endPan, true);
+    window.addEventListener('mouseup', endPan, true);
+    window.addEventListener('pointercancel', endPan, true);
+    window.addEventListener('blur', endPan);
 
     return () => {
+      endPan();
       fCanvas.off('mouse:down', handleMouseDown);
       fCanvas.off('mouse:move', handleMouseMove);
       fCanvas.off('mouse:up', handleMouseUp);
       fCanvas.off('mouse:dblclick', handleDblClick);
+      window.removeEventListener('pointermove', handlePanMove, true);
+      window.removeEventListener('mousemove', handlePanMove, true);
+      window.removeEventListener('pointerup', endPan, true);
+      window.removeEventListener('mouseup', endPan, true);
+      window.removeEventListener('pointercancel', endPan, true);
+      window.removeEventListener('blur', endPan);
     };
   }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing, saveWithRetry, isTouchDevice]);
+
+  // Keep wheel zoom local to the plan and restore the same PDF coordinate
+  // beneath the cursor after the asynchronous PDF/Fabric re-render completes.
+  useEffect(() => {
+    const scroller = document.getElementById('pdf-scroll-container');
+    if (!scroller) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      const pageElement = containerRef.current;
+      if (!pageElement) return;
+      const pageRect = pageElement.getBoundingClientRect();
+      if (
+        event.clientX < pageRect.left
+        || event.clientX > pageRect.right
+        || event.clientY < pageRect.top
+        || event.clientY > pageRect.bottom
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      const currentZoom = zoomRef.current;
+      const renderedZoom = renderedZoomRef.current;
+      const nextZoom = Math.max(
+        0.25,
+        Math.min(3.0, currentZoom + (event.deltaY < 0 ? 0.25 : -0.25)),
+      );
+      if (nextZoom === currentZoom) return;
+
+      pendingZoomFocal.current = {
+        token: ++zoomFocalToken.current,
+        page: currentPage,
+        expectedZoom: nextZoom,
+        // The state may already contain a queued wheel step while this page
+        // still displays the previous render. Always derive the PDF point
+        // from the dimensions that are visibly under the cursor.
+        sceneX: (event.clientX - pageRect.left) / renderedZoom,
+        sceneY: (event.clientY - pageRect.top) / renderedZoom,
+        clientX: event.clientX,
+        clientY: event.clientY,
+      };
+      zoomRef.current = nextZoom;
+      dispatch({ type: 'SET_ZOOM', zoom: nextZoom });
+    };
+
+    scroller.addEventListener('wheel', handleWheel, { passive: false });
+    return () => scroller.removeEventListener('wheel', handleWheel);
+  }, [currentPage, dispatch, pdfDoc]);
+
+  useEffect(() => {
+    const pending = pendingZoomFocal.current;
+    if (pending && (pending.page !== currentPage || pending.expectedZoom !== zoom)) {
+      pendingZoomFocal.current = null;
+    }
+  }, [currentPage, zoom]);
 
   // 5. Delete / Escape key handlers
   useEffect(() => {

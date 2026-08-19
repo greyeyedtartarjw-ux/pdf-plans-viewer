@@ -622,7 +622,7 @@ export default function Shell() {
       <div className="flex-1 flex overflow-hidden relative">
         <Sidebar />
 
-        <main className="flex-1 flex flex-col relative bg-muted/40">
+        <main className="flex-1 min-w-0 flex flex-col relative bg-muted/40">
           {/* Server unreachable banner — persistent until connectivity is restored */}
           {showServerWarning && (
             <div className="bg-destructive/10 border-b border-destructive/30 px-4 py-2 text-xs text-destructive font-medium text-center">
@@ -671,8 +671,8 @@ export default function Shell() {
           {!pdfDoc ? (
             <EmptyState onFileSelect={handleFileSelect} />
           ) : (
-            <div id="pdf-scroll-container" className="flex-1 overflow-auto bg-muted p-8 print:p-0 print:bg-white print:overflow-visible">
-              <div id="pdf-viewer-area" className="mx-auto w-max print:shadow-none print:border-none">
+             <div id="pdf-scroll-container" className="flex-1 overflow-auto bg-muted p-8 print:p-0 print:bg-white print:overflow-visible">
+               <div id="pdf-viewer-area" className="mx-auto min-h-full w-max min-w-full print:shadow-none print:border-none">
                 <React.Suspense
                   fallback={(
                     <div className="flex min-h-[50vh] min-w-[50vw] items-center justify-center text-muted-foreground text-sm">

@@ -11,6 +11,14 @@ export interface FabricCanvasForRestore {
 
 type EnlivenObjects = (serialized: unknown[]) => Promise<unknown[]>;
 
+function getViewerZoom(data: unknown): number {
+  if (!data || typeof data !== 'object') return 1;
+  const viewerZoom = (data as { viewerZoom?: unknown }).viewerZoom;
+  return typeof viewerZoom === 'number' && Number.isFinite(viewerZoom) && viewerZoom > 0
+    ? viewerZoom
+    : 1;
+}
+
 /**
  * Rebuild the saved page objects after a document snapshot is loaded. The
  * caller supplies cancellation so an older async Fabric decode cannot paint
@@ -23,6 +31,7 @@ export async function rebuildFabricPage(
   pageNumber: number,
   enlivenObjects: EnlivenObjects,
   isCancelled: () => boolean,
+  zoom = 1,
 ): Promise<boolean> {
   canvas.clear();
   const items = [
@@ -42,6 +51,25 @@ export async function rebuildFabricPage(
   for (const result of decoded) {
     if (result.status !== 'fulfilled') continue;
     for (const object of result.value.objects) {
+      const sourceZoom = getViewerZoom(
+        items.find((item) => item.id === result.value.id)?.data,
+      );
+      const ratio = zoom / sourceZoom;
+      if (ratio !== 1 && object && typeof object === 'object') {
+        const scaledObject = object as {
+          left?: number;
+          top?: number;
+          scaleX?: number;
+          scaleY?: number;
+          set?: (properties: Record<string, number>) => void;
+        };
+        scaledObject.set?.({
+          ...(typeof scaledObject.left === 'number' ? { left: scaledObject.left * ratio } : {}),
+          ...(typeof scaledObject.top === 'number' ? { top: scaledObject.top * ratio } : {}),
+          ...(typeof scaledObject.scaleX === 'number' ? { scaleX: scaledObject.scaleX * ratio } : {}),
+          ...(typeof scaledObject.scaleY === 'number' ? { scaleY: scaledObject.scaleY * ratio } : {}),
+        });
+      }
       (object as { id?: string }).id = result.value.id;
       canvas.add(object);
     }
