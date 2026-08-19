@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -27,13 +28,21 @@ import {
   listMeasurements,
   setDocumentScale,
 } from '@workspace/api-client-react';
-import { viewerHtml } from '@/constants/viewerHtml';
+import { createViewerHtml } from '@/constants/viewerHtml';
 import {
   pointsForMobileOverlay,
   toPdfArea,
   toPdfDistance,
 } from '@/lib/pdfCoordinates';
 import type { LocalDocument } from '../index';
+import { useOfflineQueue } from '@/hooks/useOfflineQueue';
+import type { PendingMeasurement } from '@/hooks/useOfflineQueue';
+import {
+  loadMeasurementsCache,
+  removeCachedMeasurement,
+  saveMeasurementsCache,
+  upsertCachedMeasurement,
+} from '@/lib/measurementsCache';
 
 // --- Types ---
 interface Point {
@@ -58,6 +67,24 @@ interface WebViewMessage {
   pages?: number;
   totalPages?: number;
   message?: string;
+}
+
+// A measurement as shown in the UI — may be confirmed (from API) or pending (offline).
+interface DisplayMeasurement {
+  id: string;
+  documentId?: number;
+  pageNumber: number;
+  type: 'distance' | 'area';
+  label: string;
+  realWorldValue?: number;
+  unit?: string;
+  points: Record<string, unknown>[];
+  fabricData?: Record<string, unknown>;
+  createdAt?: string;
+  /** true = saved locally but not yet confirmed by the API */
+  isPending: boolean;
+  /** stable local ID used to dequeue after API confirms */
+  localId?: string;
 }
 
 // --- Helpers ---
@@ -89,6 +116,9 @@ function formatValue(val: number, unit: string, isArea: boolean): string {
   return `${val < 10 ? val.toFixed(2) : val.toFixed(1)} ${u}`;
 }
 
+const pdfJsLibraryAsset = require('../../../assets/pdfjs/pdf.min.txt');
+const pdfJsWorkerAsset = require('../../../assets/pdfjs/pdf.worker.min.txt');
+
 // --- Main Screen ---
 export default function ViewerScreen() {
   const colors = useColors();
@@ -96,6 +126,9 @@ export default function ViewerScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const docId = parseInt(id ?? '0', 10);
   const queryClient = useQueryClient();
+
+  // Offline queue
+  const { pendingForDoc, isSyncing, enqueue, dequeue, flush } = useOfflineQueue();
 
   // WebView stored in state so React re-renders when the dynamic import resolves
   const webViewRef = useRef<any>(null);
@@ -143,7 +176,6 @@ export default function ViewerScreen() {
   }, [docId]);
 
   // On native: dynamically import WebView to avoid SSR crash on web.
-  // Storing in state (not a ref) so React re-renders once the class is ready.
   useEffect(() => {
     if (Platform.OS === 'web') return;
     import('react-native-webview').then((m) => {
@@ -168,10 +200,31 @@ export default function ViewerScreen() {
       });
   }, [doc]);
 
-  // API queries
-  const { data: measurements = [], refetch: refetchMeasurements } = useQuery({
+  // Load the device cache alongside the API so existing drawings render
+  // immediately on a slow connection and after an offline restart.
+  const { data: cachedMeasurements = [] } = useQuery({
+    queryKey: ['measurements-cache', docId],
+    queryFn: () => loadMeasurementsCache(docId),
+    enabled: !!docId,
+  });
+
+  const { data: apiMeasurements, refetch: refetchMeasurements } = useQuery({
     queryKey: ['measurements', docId],
-    queryFn: () => listMeasurements(docId),
+    queryFn: async () => {
+      const requestStartedAt = Date.now();
+      try {
+        const data = await listMeasurements(docId);
+        const reconciled = await saveMeasurementsCache(
+          docId,
+          data,
+          requestStartedAt,
+        );
+        queryClient.setQueryData(['measurements-cache', docId], reconciled);
+        return reconciled;
+      } catch {
+        return loadMeasurementsCache(docId);
+      }
+    },
     enabled: !!docId,
   });
 
@@ -181,11 +234,49 @@ export default function ViewerScreen() {
     enabled: !!docId,
   });
 
+  // Merge API measurements with offline-pending ones for display.
+  // Pending items are shown first so users immediately see what they drew.
+  const pendingItems = pendingForDoc(docId);
+  const confirmedMeasurements = apiMeasurements ?? cachedMeasurements;
+
+  const measurements: DisplayMeasurement[] = [
+    // Pending (locally stored, not yet confirmed by server)
+    ...pendingItems.map((p): DisplayMeasurement => ({
+      id: p.localId,
+      pageNumber: p.input.pageNumber,
+      type: p.input.type,
+      label: p.input.label,
+      realWorldValue: p.input.realWorldValue,
+      unit: p.input.unit,
+      points: p.input.points,
+      fabricData: p.input.fabricData,
+      createdAt: p.createdAt,
+      isPending: true,
+      localId: p.localId,
+    })),
+    // Confirmed (API)
+    ...confirmedMeasurements.map((m): DisplayMeasurement => ({
+      ...m,
+      points: m.points as Record<string, unknown>[],
+      fabricData: m.fabricData as Record<string, unknown>,
+      isPending: false,
+    })),
+  ];
+
   // API mutations
   const createMutation = useMutation({
     mutationFn: (input: Parameters<typeof createMeasurement>[1]) =>
       createMeasurement(docId, input),
-    onSuccess: () => {
+    onSuccess: async (created) => {
+      const cached = await upsertCachedMeasurement(docId, created);
+      queryClient.setQueryData(['measurements-cache', docId], cached);
+      queryClient.setQueryData(
+        ['measurements', docId],
+        (current: typeof apiMeasurements | undefined) => [
+          ...((current ?? []).filter((measurement) => measurement.id !== created.id)),
+          created,
+        ],
+      );
       queryClient.invalidateQueries({ queryKey: ['measurements', docId] });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     },
@@ -193,7 +284,14 @@ export default function ViewerScreen() {
 
   const deleteMutation = useMutation({
     mutationFn: (mId: string) => deleteMeasurement(docId, mId),
-    onSuccess: () => {
+    onSuccess: async (_data, mId) => {
+      const cached = await removeCachedMeasurement(docId, mId);
+      queryClient.setQueryData(['measurements-cache', docId], cached);
+      queryClient.setQueryData(
+        ['measurements', docId],
+        (current: typeof apiMeasurements | undefined) =>
+          current?.filter((measurement) => measurement.id !== mId),
+      );
       queryClient.invalidateQueries({ queryKey: ['measurements', docId] });
     },
   });
@@ -230,6 +328,13 @@ export default function ViewerScreen() {
     sendMsg({ type: 'setSavedMeasurements', measurements: pageMeasurements });
   }, [measurements, page, canvasSize]);
 
+  // When the queue finishes syncing, refresh API data so the list is up to date
+  useEffect(() => {
+    if (!isSyncing) {
+      queryClient.invalidateQueries({ queryKey: ['measurements', docId] });
+    }
+  }, [isSyncing, docId, queryClient]);
+
   // --- WebView communication ---
   function sendMsg(data: object) {
     if (!webViewRef.current) return;
@@ -248,7 +353,6 @@ export default function ViewerScreen() {
 
       switch (msg.type) {
         case 'ready':
-          // WebView is ready — send PDF if we already have it
           if (pdfBase64Ref.current) {
             sendMsg({ type: 'loadPdf', base64: pdfBase64Ref.current });
           }
@@ -359,24 +463,44 @@ export default function ViewerScreen() {
 
     const label = formatValue(realWorldValue, scaleIsSet ? scale!.realWorldUnit : 'px', isArea);
 
+    const measurementId = genId();
+    const localId = `local_${measurementId}`;
+
+    const input = {
+      id: measurementId,
+      pageNumber: pageRef.current,
+      type: isArea ? ('area' as const) : ('distance' as const),
+      label,
+      realWorldValue,
+      unit,
+      points: points as unknown as Record<string, unknown>[],
+      fabricData: {
+        canvasWidth: cw,
+        canvasHeight: ch,
+        platform: 'mobile',
+      } as Record<string, unknown>,
+    };
+
+    // ── Step 1: persist locally immediately so it's visible even if offline ──
+    const pendingItem: PendingMeasurement = {
+      localId,
+      docId,
+      input,
+      createdAt: new Date().toISOString(),
+    };
+    await enqueue(pendingItem);
+
+    // ── Step 2: try to save to the API ───────────────────────────────────────
     try {
-      await createMutation.mutateAsync({
-        id: genId(),
-        pageNumber: pageRef.current,
-        type: isArea ? 'area' : 'distance',
-        label,
-        realWorldValue,
-        unit,
-        points: points as unknown as Record<string, unknown>[],
-        fabricData: {
-          canvasWidth: cw,
-          canvasHeight: ch,
-          platform: 'mobile',
-        } as unknown as Record<string, unknown>,
-      });
+      await createMutation.mutateAsync(input);
+      // Success — remove from the offline queue (API now owns it)
+      await dequeue(localId);
       await refetchMeasurements();
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch {
-      Alert.alert('Save Failed', 'Could not save the measurement. Please try again.');
+      // Network unavailable — item stays in queue; synced automatically when online
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      // No error alert; the pending indicator in the UI tells the story
     } finally {
       setSaving(false);
       // Reset tool
@@ -453,14 +577,19 @@ export default function ViewerScreen() {
     sendMsg({ type: 'setMode', mode: modeRef.current });
   }
 
-  function confirmDelete(mId: string, label: string) {
+  function confirmDelete(mId: string, label: string, isPending: boolean, localId?: string) {
     Alert.alert('Delete Measurement', `Delete "${label}"?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => {
-          deleteMutation.mutate(mId);
+        onPress: async () => {
+          if (isPending && localId) {
+            // Remove from offline queue only
+            await dequeue(localId);
+          } else {
+            deleteMutation.mutate(mId);
+          }
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         },
       },
@@ -472,8 +601,16 @@ export default function ViewerScreen() {
   const bottomPad = Platform.OS === 'web' ? 34 : insets.bottom;
   const styles = makeStyles(colors);
   const pageMeasurements = measurements.filter((m) => m.pageNumber === page);
+  const pendingCount = pendingItems.length;
+  const pendingCountForPage = pendingItems.filter(
+    (measurement) => measurement.input.pageNumber === page,
+  ).length;
 
   const WV = WebViewComponent;
+  const localViewerHtml = createViewerHtml(
+    Image.resolveAssetSource(pdfJsLibraryAsset).uri,
+    Image.resolveAssetSource(pdfJsWorkerAsset).uri,
+  );
 
   return (
     <View style={[styles.container, { paddingTop: topPad }]}>
@@ -521,12 +658,33 @@ export default function ViewerScreen() {
         </View>
       </View>
 
+      {/* Pending-sync banner — shown when there are unsynced measurements */}
+      {pendingCount > 0 && (
+        <TouchableOpacity
+          style={[styles.pendingBanner, { backgroundColor: colors.primary }]}
+          onPress={() => flush(pendingItems)}
+          activeOpacity={0.8}
+          testID="pending-sync-banner"
+        >
+          {isSyncing ? (
+            <ActivityIndicator size="small" color={colors.primaryForeground} />
+          ) : (
+            <Ionicons name="cloud-upload-outline" size={14} color={colors.primaryForeground} />
+          )}
+          <Text style={[styles.pendingBannerText, { color: colors.primaryForeground }]}>
+            {isSyncing
+              ? 'Syncing measurements…'
+              : `${pendingCount} measurement${pendingCount !== 1 ? 's' : ''} pending sync — tap to retry`}
+          </Text>
+        </TouchableOpacity>
+      )}
+
       {/* PDF WebView */}
       <View style={styles.pdfWrap}>
         {Platform.OS !== 'web' && WV ? (
           <WV
             ref={webViewRef}
-            source={{ html: viewerHtml }}
+            source={{ html: localViewerHtml }}
             style={styles.webView}
             javaScriptEnabled
             domStorageEnabled
@@ -716,6 +874,13 @@ export default function ViewerScreen() {
             <Text style={styles.panelTitle}>
               Measurements — Page {page}
             </Text>
+            {pendingCountForPage > 0 && (
+              <View style={[styles.pendingPill, { backgroundColor: colors.primary }]}>
+                <Text style={[styles.pendingPillText, { color: colors.primaryForeground }]}>
+                  {pendingCountForPage} pending
+                </Text>
+              </View>
+            )}
           </View>
           <ScrollView
             style={{ maxHeight: 200 }}
@@ -727,17 +892,25 @@ export default function ViewerScreen() {
               </Text>
             ) : (
               pageMeasurements.map((m) => (
-                <View key={m.id} style={styles.measureRow}>
+                <View key={m.id} style={[styles.measureRow, m.isPending && styles.measureRowPending]}>
                   <MaterialCommunityIcons
                     name={m.type === 'distance' ? 'ruler' : 'vector-polygon'}
                     size={15}
-                    color={colors.primary}
+                    color={m.isPending ? colors.mutedForeground : colors.primary}
                   />
-                  <Text style={styles.measureLabel} numberOfLines={1}>
+                  <Text
+                    style={[styles.measureLabel, m.isPending && { color: colors.mutedForeground }]}
+                    numberOfLines={1}
+                  >
                     {m.label}
                   </Text>
+                  {m.isPending && (
+                    <View style={styles.pendingDot}>
+                      <Ionicons name="cloud-upload-outline" size={13} color={colors.mutedForeground} />
+                    </View>
+                  )}
                   <TouchableOpacity
-                    onPress={() => confirmDelete(m.id, m.label)}
+                    onPress={() => confirmDelete(m.id, m.label, m.isPending, m.localId)}
                     hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Ionicons
@@ -916,6 +1089,18 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
       minWidth: 36,
       textAlign: 'center',
     },
+    pendingBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+    },
+    pendingBannerText: {
+      fontSize: 12,
+      fontFamily: 'Inter_500Medium',
+      flex: 1,
+    },
     pdfWrap: {
       flex: 1,
       backgroundColor: '#1D2530',
@@ -1028,14 +1213,27 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
       borderTopColor: colors.border,
     },
     panelHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
       paddingHorizontal: 16,
       paddingTop: 12,
       paddingBottom: 8,
+      gap: 8,
     },
     panelTitle: {
       fontSize: 13,
       fontWeight: '600' as const,
       color: colors.foreground,
+      fontFamily: 'Inter_600SemiBold',
+      flex: 1,
+    },
+    pendingPill: {
+      paddingHorizontal: 8,
+      paddingVertical: 3,
+      borderRadius: 10,
+    },
+    pendingPillText: {
+      fontSize: 10,
       fontFamily: 'Inter_600SemiBold',
     },
     panelEmpty: {
@@ -1054,6 +1252,9 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
       paddingVertical: 10,
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.border,
+    },
+    measureRowPending: {
+      opacity: 0.7,
     },
     measureLabel: {
       flex: 1,
@@ -1133,6 +1334,10 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
     saveBtnText: {
       fontSize: 15,
       fontFamily: 'Inter_600SemiBold',
+    },
+    pendingDot: {
+      alignItems: 'center',
+      justifyContent: 'center',
     },
   });
 }

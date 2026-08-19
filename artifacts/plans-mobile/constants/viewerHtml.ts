@@ -1,7 +1,9 @@
 /**
  * Self-contained HTML for the PDF measurement WebView.
  *
- * Uses PDF.js 3.11.174 (same version as the web app) loaded from cdnjs.
+ * Uses PDF.js 3.11.174 bundled with the mobile app. The caller provides
+ * static asset URLs for the library and worker so this viewer never needs a
+ * network request to render an imported plan.
  * Renders the PDF on one canvas, with a transparent overlay canvas that
  * captures tap/click events for placing measurement points.
  *
@@ -26,7 +28,8 @@
  *     { type: 'measurementComplete', mode, points, width, height }
  *     { type: 'error', message: string }
  */
-export const viewerHtml = `<!DOCTYPE html>
+export function createViewerHtml(pdfJsUri: string, pdfJsWorkerUri: string) {
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
@@ -51,9 +54,9 @@ export const viewerHtml = `<!DOCTYPE html>
       <canvas id="overlayCanvas"></canvas>
     </div>
   </div>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="${pdfJsUri}"></script>
   <script>
-    pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc=${JSON.stringify(pdfJsWorkerUri)};
     var pdfDoc=null, currentPage=1, mode='none', currentPoints=[], savedMeasurements=[], canvasW=0, canvasH=0, naturalPageW=0, lastTap=0;
     var pdfCanvas=document.getElementById('pdfCanvas'), overlayCanvas=document.getElementById('overlayCanvas');
     var pdfCtx=pdfCanvas.getContext('2d'), overlayCtx=overlayCanvas.getContext('2d');
@@ -204,3 +207,4 @@ export const viewerHtml = `<!DOCTYPE html>
   </script>
 </body>
 </html>`;
+}

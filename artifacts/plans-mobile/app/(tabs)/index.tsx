@@ -22,6 +22,10 @@ import { useColors } from '@/hooks/useColors';
 import { usePdfImport } from '@/hooks/usePdfImport';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { listMeasurements } from '@workspace/api-client-react';
+import {
+  loadMeasurementsCache,
+  saveMeasurementsCache,
+} from '@/lib/measurementsCache';
 
 const DOCS_STORAGE_KEY = '@plans_mobile_documents_v1';
 
@@ -191,12 +195,35 @@ function DocumentCard({
   onLongPress: () => void;
 }) {
   const styles = makeStyles(colors);
+  const queryClient = useQueryClient();
 
-  const { data: measurements = [] } = useQuery({
+  // Load the local cache independently so the count is available immediately,
+  // rather than waiting for a slow or unavailable API request.
+  const { data: cachedMeasurements = [] } = useQuery({
+    queryKey: ['measurements-cache', doc.id],
+    queryFn: () => loadMeasurementsCache(doc.id),
+  });
+
+  const { data: remoteMeasurements } = useQuery({
     queryKey: ['measurements', doc.id],
-    queryFn: () => listMeasurements(doc.id),
+    queryFn: async () => {
+      const requestStartedAt = Date.now();
+      try {
+        const measurements = await listMeasurements(doc.id);
+        const reconciled = await saveMeasurementsCache(
+          doc.id,
+          measurements,
+          requestStartedAt,
+        );
+        queryClient.setQueryData(['measurements-cache', doc.id], reconciled);
+        return reconciled;
+      } catch {
+        return loadMeasurementsCache(doc.id);
+      }
+    },
     staleTime: 30_000,
   });
+  const measurements = remoteMeasurements ?? cachedMeasurements;
 
   const date = new Date(doc.addedAt);
   const dateStr = date.toLocaleDateString(undefined, {
