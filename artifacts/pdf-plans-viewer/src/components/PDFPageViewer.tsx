@@ -38,6 +38,16 @@ export default function PDFPageViewer() {
   const [isRenderLoading, setIsRenderLoading] = useState(false);
   const [areaHint, setAreaHint] = useState<string | null>(null);
   const areaHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [isAreaDrawingActive, setIsAreaDrawingActive] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(pointer: coarse)');
+    setIsTouchDevice(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsTouchDevice(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
 
   // ── Failed-save queue ─────────────────────────────────────────────────────
   // Stores retry functions for saves that failed due to server being unreachable.
@@ -141,6 +151,7 @@ export default function PDFPageViewer() {
       canvas.remove(areaLivePreview.current);
       areaLivePreview.current = null;
     }
+    setIsAreaDrawingActive(false);
     if (areaLiveLabel.current) {
       canvas.remove(areaLiveLabel.current);
       areaLiveLabel.current = null;
@@ -316,8 +327,13 @@ export default function PDFPageViewer() {
       } else if (activeTool === 'measure-area') {
         if (!isDrawing.current) {
           isDrawing.current = true;
+          setIsAreaDrawingActive(true);
           points.current = [pointer];
-          showAreaHint('Backspace to undo last point · Escape to cancel');
+          showAreaHint(
+            isTouchDevice
+              ? 'Tap to add points · Double-tap to close shape'
+              : 'Backspace to undo last point · Escape to cancel',
+          );
         } else {
           // Resolve the effective point: snap to the first point when within
           // the snap radius so the stored coordinate matches the visual preview.
@@ -643,6 +659,7 @@ export default function PDFPageViewer() {
 
       // Reset area drawing state
       isDrawing.current = false;
+      setIsAreaDrawingActive(false);
       points.current = [];
       currentShape.current = null;
       fCanvas.renderAll();
@@ -659,7 +676,7 @@ export default function PDFPageViewer() {
       fCanvas.off('mouse:up', handleMouseUp);
       fCanvas.off('mouse:dblclick', handleDblClick);
     };
-  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing, saveWithRetry]);
+  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing, saveWithRetry, isTouchDevice]);
 
   // 5. Delete / Escape key handlers
   useEffect(() => {
@@ -723,6 +740,23 @@ export default function PDFPageViewer() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [fCanvas, activeTool, currentPage, dispatch, documentId, cancelAreaDrawing, saveWithRetry]);
 
+  /** Undo the last placed area point — mirrors the Backspace keyboard handler. */
+  const undoLastAreaPoint = useCallback(() => {
+    if (!fCanvas || !isDrawing.current) return;
+    if (points.current.length <= 1) {
+      cancelAreaDrawing(fCanvas);
+    } else {
+      points.current = points.current.slice(0, -1);
+      const lastSeg = areaPreviewLines.current.pop();
+      if (lastSeg) fCanvas.remove(lastSeg);
+      fCanvas.renderAll();
+    }
+  }, [fCanvas, cancelAreaDrawing]);
+
+  const cancelActiveAreaDrawing = useCallback(() => {
+    if (fCanvas && isDrawing.current) cancelAreaDrawing(fCanvas);
+  }, [fCanvas, cancelAreaDrawing]);
+
   return (
     <div className="relative shadow-xl bg-white border border-border/50 select-none m-auto transition-transform origin-top-left" ref={containerRef}>
       <canvas ref={pdfCanvasRef} className="absolute top-0 left-0 pointer-events-none" />
@@ -740,6 +774,22 @@ export default function PDFPageViewer() {
           <div className="bg-card/95 border border-border text-foreground text-xs font-medium px-3 py-2 rounded-md shadow-lg backdrop-blur-sm">
             {areaHint}
           </div>
+        </div>
+      )}
+      {isTouchDevice && isAreaDrawingActive && (
+        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 flex gap-2">
+          <button
+            onPointerDown={(e) => { e.stopPropagation(); undoLastAreaPoint(); }}
+            className="bg-card/95 border border-border text-foreground text-sm font-medium px-4 py-2 rounded-md shadow-lg backdrop-blur-sm active:bg-muted touch-manipulation"
+          >
+            ↩ Undo point
+          </button>
+          <button
+            onPointerDown={(e) => { e.stopPropagation(); cancelActiveAreaDrawing(); }}
+            className="bg-destructive/90 border border-destructive text-destructive-foreground text-sm font-medium px-4 py-2 rounded-md shadow-lg backdrop-blur-sm active:bg-destructive touch-manipulation"
+          >
+            ✕ Cancel
+          </button>
         </div>
       )}
     </div>
