@@ -401,8 +401,6 @@ export default function ViewerScreen() {
             setMode('none');
             modeRef.current = 'none';
             setCurrentPoints([]);
-            sendMsg({ type: 'setMode', mode: 'none' });
-            sendMsg({ type: 'clearCurrentPoints' });
           } else {
             finalizeMeasurement(
               msg.mode ?? modeRef.current,
@@ -528,7 +526,7 @@ export default function ViewerScreen() {
         realWorldUnit: calibUnit,
         isSet: true,
       } as Parameters<typeof setDocumentScale>[1]);
-      setCalibModal(false);
+      closeCalibrationModal();
       Alert.alert(
         'Scale saved',
         `1 ${calibUnit} = ${pixelsPerUnit.toFixed(2)} plan units. New measurements will now show real-world distances.`,
@@ -540,6 +538,16 @@ export default function ViewerScreen() {
     }
   }
 
+  function clearCalibrationOverlay() {
+    sendMsg({ type: 'setMode', mode: 'none' });
+    sendMsg({ type: 'clearCurrentPoints' });
+  }
+
+  function closeCalibrationModal() {
+    setCalibModal(false);
+    clearCalibrationOverlay();
+  }
+
   // --- Tool actions ---
   function selectMode(next: MeasureMode) {
     // 'calibrate' is not a toggle — always activate it fresh
@@ -547,8 +555,8 @@ export default function ViewerScreen() {
     setMode(newMode);
     modeRef.current = newMode;
     setCurrentPoints([]);
-    // Calibrate reuses the WebView's distance-picking behaviour
-    sendMsg({ type: 'setMode', mode: newMode === 'calibrate' ? 'distance' : newMode });
+    // Calibration has its own WebView mode, with the same two-point flow as distance.
+    sendMsg({ type: 'setMode', mode: newMode });
     sendMsg({ type: 'clearCurrentPoints' });
     if (newMode !== 'none') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }
@@ -931,7 +939,7 @@ export default function ViewerScreen() {
         visible={calibModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setCalibModal(false)}
+        onRequestClose={closeCalibrationModal}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -940,7 +948,7 @@ export default function ViewerScreen() {
           <View style={[styles.modalSheet, { paddingBottom: Math.max(bottomPad, 24) }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Set Scale</Text>
-              <TouchableOpacity onPress={() => setCalibModal(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <TouchableOpacity onPress={closeCalibrationModal} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="close" size={22} color={colors.mutedForeground} />
               </TouchableOpacity>
             </View>

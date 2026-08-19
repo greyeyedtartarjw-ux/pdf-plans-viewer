@@ -14,7 +14,7 @@
  * Message types:
  *   INBOUND:
  *     { type: 'loadPdf', base64: string }
- *     { type: 'setMode', mode: 'none'|'distance'|'area' }
+ *     { type: 'setMode', mode: 'none'|'distance'|'area'|'calibrate' }
  *     { type: 'clearCurrentPoints' }
  *     { type: 'undoPoint' }
  *     { type: 'setSavedMeasurements', measurements: [{id,type,points,label}] }
@@ -57,7 +57,7 @@ export function createViewerHtml(pdfJsUri: string, pdfJsWorkerUri: string) {
   <script src="${pdfJsUri}"></script>
   <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc=${JSON.stringify(pdfJsWorkerUri)};
-    var pdfDoc=null, currentPage=1, mode='none', currentPoints=[], savedMeasurements=[], canvasW=0, canvasH=0, naturalPageW=0, lastTap=0;
+    var pdfDoc=null, currentPage=1, mode='none', currentPoints=[], calibrationPreviewPoint=null, savedMeasurements=[], canvasW=0, canvasH=0, naturalPageW=0, lastTap=0;
     var pdfCanvas=document.getElementById('pdfCanvas'), overlayCanvas=document.getElementById('overlayCanvas');
     var pdfCtx=pdfCanvas.getContext('2d'), overlayCtx=overlayCanvas.getContext('2d');
     var loadingEl=document.getElementById('loading'), wrapperEl=document.getElementById('wrapper');
@@ -92,7 +92,42 @@ export function createViewerHtml(pdfJsUri: string, pdfJsWorkerUri: string) {
     function drawOverlay() {
       overlayCtx.clearRect(0,0,overlayCanvas.width,overlayCanvas.height);
       for(var i=0;i<savedMeasurements.length;i++) { var m=savedMeasurements[i]; drawPoints(m.points,m.type,'#FF9F1A',0.75,m.label,false); }
-      if(currentPoints.length>0) drawPoints(currentPoints,mode,'#FFFFFF',1.0,null,true);
+      if(mode==='calibrate') {
+        if(currentPoints.length>=2) {
+          drawCalibrationLine(currentPoints[0],currentPoints[1],'#FFB020',false);
+          drawPointMarkers(currentPoints,'#FFB020');
+        } else if(currentPoints.length===1) {
+          drawPointMarkers(currentPoints,'#FFFFFF');
+          if(calibrationPreviewPoint) drawCalibrationLine(currentPoints[0],calibrationPreviewPoint,'#FFFFFF',true);
+        }
+      } else if(currentPoints.length>0) {
+        drawPoints(currentPoints,mode,'#FFFFFF',1.0,null,true);
+      }
+    }
+
+    function drawCalibrationLine(start,end,color,dashed) {
+      if(!start||!end) return;
+      overlayCtx.save();
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(start.x,start.y);
+      overlayCtx.lineTo(end.x,end.y);
+      overlayCtx.strokeStyle=color;
+      overlayCtx.lineWidth=3;
+      overlayCtx.lineCap='round';
+      if(overlayCtx.setLineDash) overlayCtx.setLineDash(dashed?[8,6]:[]);
+      overlayCtx.stroke();
+      overlayCtx.restore();
+    }
+
+    function drawPointMarkers(pts,color) {
+      overlayCtx.save();
+      for(var i=0;i<pts.length;i++) {
+        overlayCtx.beginPath();
+        overlayCtx.arc(pts[i].x,pts[i].y,6,0,Math.PI*2);
+        overlayCtx.fillStyle=color;
+        overlayCtx.fill();
+      }
+      overlayCtx.restore();
     }
 
     function drawPoints(pts,type,color,alpha,label,isActive) {
@@ -151,19 +186,30 @@ export function createViewerHtml(pdfJsUri: string, pdfJsWorkerUri: string) {
         var f=currentPoints[0], d=Math.sqrt(Math.pow(p.x-f.x,2)+Math.pow(p.y-f.y,2));
         if(d<24){ postRN({type:'measurementComplete',mode:'area',points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW}); return; }
       }
+      if(mode==='calibrate'&&currentPoints.length>=2) return;
+      calibrationPreviewPoint=null;
       currentPoints.push(p); drawOverlay();
-      if(mode==='distance'&&currentPoints.length===2) {
-        postRN({type:'measurementComplete',mode:'distance',points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW}); return;
+      if((mode==='distance'||mode==='calibrate')&&currentPoints.length===2) {
+        postRN({type:'measurementComplete',mode:mode,points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW}); return;
       }
       postRN({type:'pointAdded',x:p.x,y:p.y,count:currentPoints.length,width:canvasW,height:canvasH,naturalPageW:naturalPageW});
     }
 
+    overlayCanvas.addEventListener('touchmove',function(e){
+      if(mode!=='calibrate'||currentPoints.length!==1) return;
+      e.preventDefault(); e.stopPropagation();
+      var t=e.touches[0]; calibrationPreviewPoint=coords(t.clientX,t.clientY); drawOverlay();
+    },{passive:false});
     overlayCanvas.addEventListener('touchend',function(e){
       e.preventDefault(); e.stopPropagation();
       if(mode==='none') return;
       var now=Date.now(); if(now-lastTap<250) return; lastTap=now;
       var t=e.changedTouches[0]; handleTap(t.clientX,t.clientY);
     },{passive:false});
+    overlayCanvas.addEventListener('mousemove',function(e){
+      if(mode!=='calibrate'||currentPoints.length!==1) return;
+      calibrationPreviewPoint=coords(e.clientX,e.clientY); drawOverlay();
+    });
     overlayCanvas.addEventListener('click',function(e){ if(mode!=='none') handleTap(e.clientX,e.clientY); });
 
     function onMsg(data) {
@@ -172,13 +218,15 @@ export function createViewerHtml(pdfJsUri: string, pdfJsWorkerUri: string) {
         case 'loadPdf': loadPdf(msg.base64); break;
         case 'setMode':
           mode=msg.mode;
+          calibrationPreviewPoint=null;
           wrapperEl.style.overflowY=mode==='none'?'auto':'hidden';
+          drawOverlay();
           break;
-        case 'clearCurrentPoints': currentPoints=[]; drawOverlay(); break;
-        case 'undoPoint': currentPoints.pop(); drawOverlay(); break;
+        case 'clearCurrentPoints': currentPoints=[]; calibrationPreviewPoint=null; drawOverlay(); break;
+        case 'undoPoint': currentPoints.pop(); calibrationPreviewPoint=null; drawOverlay(); break;
         case 'setSavedMeasurements': savedMeasurements=msg.measurements||[]; drawOverlay(); break;
         case 'setPage':
-          currentPage=msg.page; currentPoints=[]; savedMeasurements=[];
+          currentPage=msg.page; currentPoints=[]; calibrationPreviewPoint=null; savedMeasurements=[];
           renderPage(currentPage); break;
         case 'finishArea':
           if(currentPoints.length>=3) postRN({type:'measurementComplete',mode:'area',points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW});

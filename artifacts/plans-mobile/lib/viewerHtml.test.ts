@@ -14,4 +14,15 @@ describe('createViewerHtml', () => {
     expect(html).not.toContain('http://');
     expect(html).not.toContain('https://');
   });
+
+  it('renders a calibration guide while choosing points and preserves the locked line', () => {
+    const html = createViewerHtml('file:///app/assets/pdf.min.txt', 'file:///app/assets/pdf.worker.min.txt');
+
+    expect(html).toContain("mode==='calibrate'");
+    expect(html).toContain("overlayCanvas.addEventListener('touchmove'");
+    expect(html).toContain("drawCalibrationLine(currentPoints[0],calibrationPreviewPoint,'#FFFFFF',true)");
+    expect(html).toContain("drawCalibrationLine(currentPoints[0],currentPoints[1],'#FFB020',false)");
+    expect(html).toContain("if(mode==='calibrate'&&currentPoints.length>=2) return;");
+    expect(html).toContain('case \'clearCurrentPoints\': currentPoints=[]; calibrationPreviewPoint=null; drawOverlay(); break;');
+  });
 });
