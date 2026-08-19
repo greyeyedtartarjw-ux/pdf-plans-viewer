@@ -3,6 +3,7 @@ import * as fabric from 'fabric';
 import { useViewerContext } from '../store/ViewerContext';
 import { renderPageToCanvas } from '../lib/pdfUtils';
 import { initFabricCanvas, applyToolState, generateId } from '../lib/fabricUtils';
+import { rebuildFabricPage } from '../lib/fabricPageState';
 import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints, resolveSnapPoint } from '../lib/measurementUtils';
 import { THEME } from '../lib/constants';
 import {
@@ -12,11 +13,34 @@ import {
   deleteMeasurement,
 } from '@workspace/api-client-react';
 import { toast } from '@/hooks/use-toast';
-import { createSaveQueue } from '../lib/saveQueue';
+import {
+  addPendingOp,
+  comparePendingOps,
+  getPendingOps,
+  nextPendingSequence,
+  removePendingOp,
+  type PendingOp,
+} from '../lib/pendingQueue';
+
+/**
+ * Return true when an HTTP error status should never be retried.
+ * 4xx errors (except 429 Too Many Requests) are client errors that a retry
+ * cannot fix. 409 Conflict in particular signals the record already exists.
+ */
+function isNonRetryable(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = (err as { status?: unknown }).status;
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+  }
+  return false;
+}
 
 export default function PDFPageViewer() {
   const { state, dispatch } = useViewerContext();
-  const { pdfDoc, currentPage, zoom, activeTool, highlightColor, scale, annotations, measurements, documentId, serverUnreachable } = state;
+  const {
+    pdfDoc, currentPage, zoom, activeTool, highlightColor, scale,
+    annotations, measurements, documentId, serverUnreachable, remoteStateRevision,
+  } = state;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -76,67 +100,245 @@ export default function PDFPageViewer() {
     }
   }, []); // stable — only reads refs and dispatchRef
 
-  // ── Failed-save queue ─────────────────────────────────────────────────────
-  // The retry mechanism is framework-agnostic and separately unit tested. Its
-  // lifecycle hooks keep the incoming save-status indicator in sync without
-  // duplicating queue behavior in this component.
-  const saveQueueRef = useRef<ReturnType<typeof createSaveQueue> | null>(null);
-  if (!saveQueueRef.current) {
-    saveQueueRef.current = createSaveQueue(toast, {
-      onSaveStart: () => {
+  // ── Causal save queue ─────────────────────────────────────────────────────
+  // Every annotation/measurement operation is persisted at user-action time,
+  // before its request starts. The in-memory entry supplies the request
+  // function; localStorage supplies the durable ordering across reloads.
+  const failedSaves = useRef<Array<{ fn: () => Promise<unknown>; errorTitle: string; pendingOp?: PendingOp }>>([]);
+  const isProcessingSaves = useRef(false);
+
+  const isAlreadyApplied = useCallback((op: PendingOp, error: unknown) => {
+    const status = error && typeof error === 'object' && 'status' in error
+      ? (error as { status?: unknown }).status
+      : undefined;
+    return (op.opType === 'create_annotation' || op.opType === 'create_measurement')
+      ? status === 409
+      : status === 404;
+  }, []);
+
+  const processPendingSaves = useCallback(async () => {
+    if (serverUnreachable || isProcessingSaves.current) return;
+    isProcessingSaves.current = true;
+    let stoppedOnFailure = false;
+
+    try {
+      while (true) {
+        // Entries can have been completed by Shell's persistent flusher.
+        failedSaves.current = failedSaves.current.filter((entry) => {
+          if (!entry.pendingOp) return true;
+          return getPendingOps(entry.pendingOp.documentId).some((op) =>
+            op.id === entry.pendingOp!.id
+            && op.opType === entry.pendingOp!.opType
+            && op.sequence === entry.pendingOp!.sequence,
+          );
+        });
+
+        const entry = [...failedSaves.current].sort((left, right) => {
+          if (!left.pendingOp || !right.pendingOp) return 0;
+          return comparePendingOps(left.pendingOp, right.pendingOp);
+        })[0];
+        if (!entry) break;
+
+        const op = entry.pendingOp;
+        if (op) {
+          const firstPersisted = getPendingOps(op.documentId)[0];
+          // A prior operation from another session must be flushed by Shell
+          // before this session can safely send a later dependent action.
+          if (
+            !firstPersisted
+            || firstPersisted.id !== op.id
+            || firstPersisted.opType !== op.opType
+            || firstPersisted.sequence !== op.sequence
+          ) {
+            stoppedOnFailure = true;
+            failureQueueCount.current = failedSaves.current.length;
+            recomputeStatus();
+            break;
+          }
+        }
+
         saveInFlight.current++;
         recomputeStatus();
-      },
-      onSaveComplete: (outcome, attemptedRequest) => {
-        if (attemptedRequest) saveInFlight.current--;
-        if (outcome === 'queued') failureQueueCount.current++;
-        if (outcome === 'terminalFailure') terminalFailureCount.current++;
+        let completed = false;
+        try {
+          await entry.fn();
+          completed = true;
+        } catch (firstError) {
+          if (op && isAlreadyApplied(op, firstError)) {
+            completed = true;
+          } else if (!isNonRetryable(firstError)) {
+            try {
+              await entry.fn();
+              completed = true;
+            } catch (retryError) {
+              completed = Boolean(op && isAlreadyApplied(op, retryError));
+            }
+          }
+        } finally {
+          saveInFlight.current--;
+        }
+
+        if (!completed) {
+          stoppedOnFailure = true;
+          failureQueueCount.current = failedSaves.current.length;
+          recomputeStatus();
+          toast({
+            variant: 'destructive',
+            title: 'Unable to save — server is unreachable',
+            description: 'Your work is queued and will sync when the connection is restored.',
+          });
+          break;
+        }
+
+        if (op) removePendingOp(op.documentId, op.id, op.opType);
+        failedSaves.current = failedSaves.current.filter((candidate) => candidate !== entry);
+        failureQueueCount.current = 0;
         recomputeStatus();
-      },
-      onRetryStart: (attemptedCount) => {
-        saveInFlight.current += attemptedCount;
-        failureQueueCount.current = Math.max(0, failureQueueCount.current - attemptedCount);
-        recomputeStatus();
-      },
-      onRetryComplete: (attemptedCount, failureCount) => {
-        saveInFlight.current -= attemptedCount;
-        failureQueueCount.current += failureCount;
-        recomputeStatus();
-      },
-    });
-  }
+      }
+    } finally {
+      isProcessingSaves.current = false;
+    }
+
+    if (stoppedOnFailure) {
+      throw new Error('Pending changes could not be synchronized');
+    }
+  }, [isAlreadyApplied, recomputeStatus, serverUnreachable]);
+
+  // Keep a ref to saveWithRetry so the window callback (set up once) always
+  // calls the latest version, which captures the current serverUnreachable value.
+  const saveWithRetryRef = useRef<(fn: () => Promise<unknown>, errorTitle: string, pendingOp?: PendingOp) => Promise<void>>(
+    async () => {}
+  );
 
   useEffect(() => {
-    const q = saveQueueRef.current!;
-    (window as any)._pendingRetryCount = () => q.pendingCount();
-    (window as any)._retryFailedSaves = () => q.retryAll();
+    (window as any)._pendingRetryCount = () => failedSaves.current.length;
+    (window as any)._retryFailedSaves = async () => {
+      const before = failedSaves.current.length;
+      await processPendingSaves();
+      if (failedSaves.current.length > 0) {
+        throw new Error('Pending changes could not be synchronized');
+      }
+      if (before > 0) {
+        toast({
+          title: 'Changes saved',
+          description: 'All previously unsaved changes have been saved successfully.',
+        });
+      }
+    };
     return () => {
       delete (window as any)._pendingRetryCount;
       delete (window as any)._retryFailedSaves;
     };
-  }, []);
+  }, [processPendingSaves]);
 
-  // Delegates the health-check/save-call race to saveQueue, which retries once
-  // and retains the operation if the server drops during either attempt.
-  const saveWithRetry = useCallback(
-    (fn: () => Promise<unknown>, errorTitle: string): Promise<void> =>
-      saveQueueRef.current!.saveWithRetry(fn, errorTitle, serverUnreachable),
-    [serverUnreachable],
-  );
+  // ── Connectivity-aware save helper ────────────────────────────────────────
+  // When the server is unreachable, skips the API call, shows an explicit
+  // "unable to save" error, and queues the operation for retry when the
+  // server comes back. Otherwise retries once on transient failure.
+  //
+  // Save status is derived entirely from saveInFlight and failureQueueCount via
+  // recomputeStatus, ensuring queued failures can never be overwritten by a
+  // concurrent unrelated success.
+  const saveWithRetry = useCallback(async (
+    fn: () => Promise<unknown>,
+    errorTitle: string,
+    pendingOp?: PendingOp,
+  ): Promise<void> => {
+    if (pendingOp) {
+      // Durable action-time enqueueing is required so a later successful
+      // delete remains ordered behind an earlier unresolved create.
+      addPendingOp(pendingOp);
+      failedSaves.current = [
+        ...failedSaves.current.filter((entry) =>
+          !entry.pendingOp
+          || entry.pendingOp.id !== pendingOp.id
+          || entry.pendingOp.opType !== pendingOp.opType,
+        ),
+        { fn, errorTitle, pendingOp },
+      ];
 
-  // Keep a ref to saveWithRetry so the window callback (set up once) always
-  // calls the latest version, which captures the current serverUnreachable value.
-  const saveWithRetryRef = useRef<(fn: () => Promise<unknown>, errorTitle: string) => Promise<void>>(
-    async () => {}
-  );
+      if (serverUnreachable) {
+        failureQueueCount.current = failedSaves.current.length;
+        recomputeStatus();
+        toast({
+          variant: 'destructive',
+          title: 'Unable to save — server is unreachable',
+          description: 'Your work is queued and will sync when the connection is restored.',
+        });
+        return;
+      }
+
+      try {
+        await processPendingSaves();
+      } catch {
+        // The queued change is intentionally left durable for reconnect/manual
+        // retry; drawing event handlers must not receive an unhandled rejection.
+      }
+      return;
+    }
+
+    if (serverUnreachable) {
+      toast({
+        variant: 'destructive',
+        title: 'Unable to save — server is unreachable',
+        description: 'Your work is visible on screen. It will be queued for retry when the connection is restored.',
+      });
+      failedSaves.current.push({ fn, errorTitle });
+      failureQueueCount.current++;
+      recomputeStatus(); // → 'failed'
+      return;
+    }
+
+    saveInFlight.current++;
+    recomputeStatus(); // → 'saving'
+
+    try {
+      await fn();
+      saveInFlight.current--;
+      recomputeStatus(); // → 'saved' if no queued failures remain
+    } catch (firstErr) {
+      if (isNonRetryable(firstErr)) {
+        console.error(errorTitle, firstErr);
+        toast({
+          variant: 'destructive',
+          title: errorTitle,
+          description: firstErr instanceof Error ? firstErr.message : 'Please check your connection and try again.',
+        });
+        // Non-retryable mutations are not queued, but they still represent
+        // local work that is not on the server. Keep the failure visible so a
+        // user cannot close the document after seeing a misleading "Saved".
+        terminalFailureCount.current++;
+        saveInFlight.current--;
+        recomputeStatus();
+        return;
+      }
+      try {
+        await fn();
+        saveInFlight.current--;
+        recomputeStatus(); // → 'saved' if no queued failures remain
+      } catch (err) {
+        console.error(errorTitle, err);
+        // Queue for retry — the server may have gone down between our health check and this call
+        failedSaves.current.push({ fn, errorTitle });
+        failureQueueCount.current++;
+        saveInFlight.current--;
+        recomputeStatus(); // → 'failed' (queued failure takes priority)
+        toast({
+          variant: 'destructive',
+          title: 'Unable to save — server is unreachable',
+          description: 'Your work is visible on screen and has been queued for retry.',
+        });
+      }
+    }
+  }, [processPendingSaves, recomputeStatus, serverUnreachable]);
 
   // Shell uses this bridge for saves that originate outside the canvas, such
   // as scale calibration. It deliberately points at the latest helper so its
   // connectivity state and queue are shared with annotation saves.
   useEffect(() => {
     saveWithRetryRef.current = saveWithRetry;
-    (window as any)._saveWithStatus = (fn: () => Promise<unknown>, errorTitle: string) =>
-      saveWithRetryRef.current(fn, errorTitle);
+    (window as any)._saveWithStatus = (fn: () => Promise<unknown>, errorTitle: string, pendingOp?: PendingOp) =>
+      saveWithRetryRef.current(fn, errorTitle, pendingOp);
     return () => {
       delete (window as any)._saveWithStatus;
     };
@@ -216,33 +418,28 @@ export default function PDFPageViewer() {
     return () => { mounted = false; };
   }, [pdfDoc, currentPage, zoom]);
 
-  // 2. Apply saved annotations/measurements when canvas changes
+  // 2. Apply a loaded remote/offline snapshot after Fabric has initialized.
+  // Local drawing updates already modify the active Fabric canvas directly, so
+  // this revision changes only when Shell replaces state during recovery/hydration.
   useEffect(() => {
     if (!fCanvas) return;
-    fCanvas.clear();
+    let cancelled = false;
 
-    const pageAnns = annotations[currentPage] || [];
-    pageAnns.forEach(ann => {
-      fabric.util.enlivenObjects([ann.data]).then((objects: any[]) => {
-        objects.forEach(obj => {
-          obj.id = ann.id;
-          fCanvas.add(obj);
-        });
-      });
+    void rebuildFabricPage(
+      fCanvas,
+      annotations,
+      measurements,
+      currentPage,
+      (serialized) => fabric.util.enlivenObjects(serialized),
+      () => cancelled,
+    ).catch((error) => {
+      if (!cancelled) console.error('Could not restore saved page objects', error);
     });
 
-    const pageMeas = measurements[currentPage] || [];
-    pageMeas.forEach(m => {
-      fabric.util.enlivenObjects([m.data]).then((objects: any[]) => {
-        objects.forEach(obj => {
-          obj.id = m.id;
-          fCanvas.add(obj);
-        });
-      });
-    });
-
-    fCanvas.renderAll();
-  }, [fCanvas, currentPage]);
+    return () => {
+      cancelled = true;
+    };
+  }, [fCanvas, currentPage, remoteStateRevision]);
 
   // 3. Handle Tool Changes
   useEffect(() => {
@@ -321,6 +518,7 @@ export default function PDFPageViewer() {
             dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
 
             if (documentId) {
+              const fabricData = group.toObject(['id'] as any) as unknown as Record<string, unknown>;
               saveWithRetry(
                 () => createMeasurement(documentId, {
                   id,
@@ -330,9 +528,23 @@ export default function PDFPageViewer() {
                   realWorldValue: mData.value,
                   unit: mData.unit,
                   points: [p1, p2],
-                  fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
+                  fabricData,
                 }),
                 'Measurement not saved',
+                {
+                  opType: 'create_measurement',
+                  documentId,
+                  id,
+                  pageNumber: currentPage,
+                  type: 'distance',
+                  label: mData.label,
+                  realWorldValue: mData.value,
+                  unit: mData.unit,
+                  points: [p1, p2],
+                  fabricData,
+                  timestamp: Date.now(),
+                  sequence: nextPendingSequence(),
+                },
               );
             }
           }
@@ -422,6 +634,16 @@ export default function PDFPageViewer() {
                 fabricData,
               }),
               'Annotation not saved',
+              {
+                opType: 'create_annotation',
+                documentId,
+                id,
+                pageNumber: currentPage,
+                type: annotation.type,
+                fabricData,
+                timestamp: Date.now(),
+                sequence: nextPendingSequence(),
+              },
             );
           }
         });
@@ -571,6 +793,16 @@ export default function PDFPageViewer() {
                 fabricData,
               }),
               'Highlight not saved',
+              {
+                opType: 'create_annotation',
+                documentId,
+                id,
+                pageNumber: currentPage,
+                type: 'highlight',
+                fabricData,
+                timestamp: Date.now(),
+                sequence: nextPendingSequence(),
+              },
             );
           }
         }
@@ -657,6 +889,7 @@ export default function PDFPageViewer() {
       dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
 
       if (documentId) {
+        const areaFabricData = group.toObject(['id'] as any) as unknown as Record<string, unknown>;
         saveWithRetry(
           () => createMeasurement(documentId, {
             id,
@@ -666,9 +899,23 @@ export default function PDFPageViewer() {
             realWorldValue: mData.value,
             unit: mData.unit,
             points: pts,
-            fabricData: group.toObject(['id'] as any) as unknown as Record<string, unknown>,
+            fabricData: areaFabricData,
           }),
           'Measurement not saved',
+          {
+            opType: 'create_measurement',
+            documentId,
+            id,
+            pageNumber: currentPage,
+            type: 'area',
+            label: mData.label,
+            realWorldValue: mData.value,
+            unit: mData.unit,
+            points: pts,
+            fabricData: areaFabricData,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          },
         );
       }
 
@@ -740,10 +987,24 @@ export default function PDFPageViewer() {
                 saveWithRetry(
                   () => deleteAnnotation(documentId, id),
                   'Could not delete annotation',
+                  {
+                    opType: 'delete_annotation',
+                    documentId,
+                    id,
+                    timestamp: Date.now(),
+                    sequence: nextPendingSequence(),
+                  },
                 );
                 saveWithRetry(
                   () => deleteMeasurement(documentId, id),
                   'Could not delete measurement',
+                  {
+                    opType: 'delete_measurement',
+                    documentId,
+                    id,
+                    timestamp: Date.now(),
+                    sequence: nextPendingSequence(),
+                  },
                 );
               }
             }

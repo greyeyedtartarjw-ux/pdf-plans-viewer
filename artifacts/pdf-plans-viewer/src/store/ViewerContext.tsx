@@ -23,6 +23,7 @@ interface ViewerState {
   serverUnreachable: boolean;
   saveStatus: 'idle' | 'saving' | 'saved' | 'failed';
   measurementOrder: string[];
+  remoteStateRevision: number;
 }
 
 type Action =
@@ -80,6 +81,7 @@ const initialState: ViewerState = {
   serverUnreachable: false,
   saveStatus: 'idle',
   measurementOrder: [],
+  remoteStateRevision: 0,
 };
 
 function reducer(state: ViewerState, action: Action): ViewerState {
@@ -96,6 +98,7 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         scale: DEFAULT_SCALE,
         documentId: null,
         measurementOrder: [],
+        remoteStateRevision: state.remoteStateRevision + 1,
       };
     case 'SET_DOCUMENT_ID':
       return { ...state, documentId: action.documentId };
@@ -190,6 +193,7 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         isSyncing: false,
         shareToken: action.shareToken ?? null,
         measurementOrder: allIds,
+        remoteStateRevision: state.remoteStateRevision + 1,
       };
     }
     default:

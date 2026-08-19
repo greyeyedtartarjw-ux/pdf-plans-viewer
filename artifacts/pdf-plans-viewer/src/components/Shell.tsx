@@ -6,7 +6,9 @@ import PDFPageViewer from './PDFPageViewer';
 import EmptyState from './EmptyState';
 import ScaleDialog from './ScaleDialog';
 import { loadPDF } from '../lib/pdfUtils';
+import { getDocumentContentHash, getLegacyDocumentKey } from '../lib/documentIdentity';
 import { exportMeasurementsCSV, exportBackupJSON } from '../lib/exportUtils';
+import { mergePendingState } from '../lib/pendingState';
 import html2canvas from 'html2canvas';
 import {
   upsertDocument,
@@ -15,10 +17,24 @@ import {
   getDocumentScale,
   setDocumentScale,
   getShare,
+  createAnnotation,
+  deleteAnnotation,
+  createMeasurement,
+  deleteMeasurement,
   useHealthCheck,
   getHealthCheckQueryKey,
 } from '@workspace/api-client-react';
 import type { Scale, Annotation, Measurement } from '../types';
+import {
+  getCachedDocumentId,
+  getPendingOps,
+  countPendingOps,
+  flushPendingOps,
+  QUEUE_CHANGED_EVENT,
+  removeCachedDocumentId,
+  setCachedDocumentId,
+  type PendingOp,
+} from '../lib/pendingQueue';
 import {
   Dialog,
   DialogContent,
@@ -70,6 +86,7 @@ function mapApiScale(apiScale: Awaited<ReturnType<typeof getDocumentScale>>): Sc
 
 /** Tools that are passive (viewing/navigating). Active drawing tools are everything else. */
 const PASSIVE_TOOLS = new Set(['pan', 'select']);
+const DEFAULT_SCALE: Scale = { set: false, pixelsPerUnit: 1, unit: 'px', realWorldUnit: 'px' };
 
 export default function Shell() {
   const { state, dispatch } = useViewerContext();
@@ -131,35 +148,201 @@ export default function Shell() {
   const [isRetrying, setIsRetrying] = useState(false);
   const [retrySuccess, setRetrySuccess] = useState<boolean | null>(null);
 
-  // When server recovers after an outage, check if there are pending retries
+  // ── Persistent pending-op count ────────────────────────────────────────────
+  // Tracks how many operations are queued in localStorage for the current document.
+  // Updated whenever the queue changes (load, flush, retry).
+  const [pendingCount, setPendingCount] = useState(0);
+  const needsRemoteHydrationRef = useRef(false);
+
+  // ── Flush localStorage pending queue to the server ────────────────────────
+  // Called after reconnect or immediately after a file is loaded when the server
+  // is already reachable and the queue is non-empty (e.g. after a page reload
+  // while there were unsaved changes). Operations are sent in queue order. If
+  // one operation fails, later operations wait for the next retry so a delete
+  // can never overtake an unresolved create.
+  const flushLocalPendingQueue = useCallback(async (docId: number) => {
+    const result = await flushPendingOps(
+      docId,
+      async (op: PendingOp) => {
+        if (op.opType === 'create_annotation') {
+          await createAnnotation(op.documentId, {
+            id: op.id,
+            pageNumber: op.pageNumber,
+            type: op.type as any,
+            fabricData: op.fabricData,
+          });
+        } else if (op.opType === 'delete_annotation') {
+          await deleteAnnotation(op.documentId, op.id);
+        } else if (op.opType === 'create_measurement') {
+          await createMeasurement(op.documentId, {
+            id: op.id,
+            pageNumber: op.pageNumber,
+            type: op.type as any,
+            label: op.label,
+            realWorldValue: op.realWorldValue,
+            unit: op.unit,
+            points: op.points,
+            fabricData: op.fabricData,
+          });
+        } else if (op.opType === 'delete_measurement') {
+          await deleteMeasurement(op.documentId, op.id);
+        }
+      },
+      (op, error) => {
+        const status = error && typeof error === 'object' && 'status' in error
+          ? (error as { status?: unknown }).status
+          : undefined;
+        // A lost response can leave a create/delete already applied on the
+        // server. Treat those idempotent outcomes as success.
+        return (
+          (op.opType === 'create_annotation' || op.opType === 'create_measurement')
+            ? status === 409
+            : status === 404
+        );
+      },
+    );
+    setPendingCount(result.remaining);
+
+    if (!result.failed && result.succeeded > 0) {
+      setRetrySuccess(true);
+      setShowRetryBanner(true);
+    } else if (result.failed) {
+      // Leave banner showing so the user can retry manually
+      setRetrySuccess(false);
+      setShowRetryBanner(true);
+    }
+    return result;
+  }, []);
+
+  /** Restore queued local work without requiring the API to be reachable. */
+  const restoreOfflinePendingState = useCallback((docId: number) => {
+    const pendingOps = getPendingOps(docId);
+    const merged = mergePendingState({}, {}, pendingOps);
+    dispatch({
+      type: 'LOAD_REMOTE_STATE',
+      documentId: docId,
+      annotations: merged.annotations,
+      measurements: merged.measurements,
+      scale: DEFAULT_SCALE,
+    });
+    setPendingCount(pendingOps.length);
+    needsRemoteHydrationRef.current = true;
+    return pendingOps.length;
+  }, [dispatch]);
+
+  /** Refresh remote state after an offline reopen, preserving queued local work. */
+  const hydrateRemoteDocument = useCallback(async (docId: number) => {
+    const [apiAnnotations, apiMeasurements, apiScale] = await Promise.all([
+      listAnnotations(docId),
+      listMeasurements(docId),
+      getDocumentScale(docId),
+    ]);
+    const pendingOps = getPendingOps(docId);
+    const merged = mergePendingState(
+      mapApiAnnotations(apiAnnotations),
+      mapApiMeasurements(apiMeasurements),
+      pendingOps,
+    );
+    dispatch({
+      type: 'LOAD_REMOTE_STATE',
+      documentId: docId,
+      annotations: merged.annotations,
+      measurements: merged.measurements,
+      scale: mapApiScale(apiScale),
+    });
+    setPendingCount(pendingOps.length);
+    needsRemoteHydrationRef.current = false;
+    return pendingOps.length;
+  }, [dispatch]);
+
+  // PDFPageViewer updates this event whenever an operation is added or removed
+  // from localStorage, so the indicator changes immediately during the session.
   useEffect(() => {
-    if (serverReachable && wasDrawingRef.current) {
-      // Check if PDFPageViewer registered any failed saves
-      const pendingCount = (window as any)._pendingRetryCount?.() ?? 0;
-      if (pendingCount > 0) {
+    const handleQueueChanged = (event: Event) => {
+      const detail = (event as CustomEvent<{ documentId: number; count: number }>).detail;
+      if (documentId && detail?.documentId === documentId) {
+        setPendingCount(detail.count);
+      }
+    };
+    window.addEventListener(QUEUE_CHANGED_EVENT, handleQueueChanged);
+    return () => window.removeEventListener(QUEUE_CHANGED_EVENT, handleQueueChanged);
+  }, [documentId]);
+
+  // When server recovers after an outage, first hydrate an offline-reopened
+  // document, then flush its persistent queue.
+  useEffect(() => {
+    if (!serverReachable) return;
+
+    // In-memory queue (operations that failed during this session)
+    const inMemoryPending = (window as any)._pendingRetryCount?.() ?? 0;
+    if (inMemoryPending > 0 || wasDrawingRef.current) {
+      setShowRetryBanner(true);
+    }
+    wasDrawingRef.current = false;
+
+    const resumeDocument = async () => {
+      if (!documentId) return;
+      try {
+        if (needsRemoteHydrationRef.current) {
+          await hydrateRemoteDocument(documentId);
+        }
+        if (countPendingOps(documentId) > 0) {
+          await flushLocalPendingQueue(documentId);
+        }
+      } catch (error) {
+        console.error('Could not resume document sync', error);
+        setRetrySuccess(false);
         setShowRetryBanner(true);
       }
-      wasDrawingRef.current = false;
-    }
-  }, [serverReachable]);
+    };
+    void resumeDocument();
+  }, [serverReachable, documentId, hydrateRemoteDocument, flushLocalPendingQueue]);
 
   const handleRetry = useCallback(async () => {
     const retryFn = (window as any)._retryFailedSaves;
-    if (!retryFn) {
-      setShowRetryBanner(false);
-      return;
-    }
     setIsRetrying(true);
     setRetrySuccess(null);
+    let failed = false;
+    let attempted = false;
     try {
-      await retryFn();
-      setRetrySuccess(true);
-    } catch {
+      if (documentId && needsRemoteHydrationRef.current) {
+        attempted = true;
+        try {
+          await hydrateRemoteDocument(documentId);
+        } catch (error) {
+          console.error('Could not refresh document state', error);
+          failed = true;
+        }
+      }
+
+      if (retryFn) {
+        attempted = true;
+        try {
+          await retryFn();
+        } catch {
+          failed = true;
+        }
+      }
+
+      if (documentId && countPendingOps(documentId) > 0) {
+        attempted = true;
+        const result = await flushLocalPendingQueue(documentId);
+        if (result.failed || result.remaining > 0) failed = true;
+      }
+
+      if (!attempted) {
+        setShowRetryBanner(false);
+      } else {
+        setRetrySuccess(!failed);
+      }
+    } catch (error) {
+      console.error('Could not retry pending changes', error);
       setRetrySuccess(false);
+      setShowRetryBanner(true);
     } finally {
       setIsRetrying(false);
     }
-  }, []);
+  }, [documentId, flushLocalPendingQueue, hydrateRemoteDocument]);
 
   // Switch to pan tool when user dismisses outage modal
   const handleOutageModalClose = useCallback(() => {
@@ -205,29 +388,25 @@ export default function Shell() {
   // ── Persist scale to API when it changes ──────────────────────────────────
   useEffect(() => {
     if (!documentId || !scale.set) return;
-    // Scale is a user-editable save just like annotations and measurements.
-    // Route it through PDFPageViewer's shared save helper so the toolbar
-    // reports in-flight, successful, and failed scale saves consistently.
-    const saveWithStatus = (window as any)._saveWithStatus as
-      | ((fn: () => Promise<unknown>, errorTitle: string) => Promise<void>)
-      | undefined;
-    if (!saveWithStatus) return;
-    void saveWithStatus(
-      () => setDocumentScale(documentId, {
-        isSet: scale.set,
-        pixelsPerUnit: scale.pixelsPerUnit,
-        unit: scale.unit,
-        realWorldUnit: scale.realWorldUnit,
-      }),
-      'Scale not saved',
-    );
+    setDocumentScale(documentId, {
+      isSet: scale.set,
+      pixelsPerUnit: scale.pixelsPerUnit,
+      unit: scale.unit,
+      realWorldUnit: scale.realWorldUnit,
+    }).catch(console.error);
   }, [documentId, scale]);
 
   // ── Load a PDF file ───────────────────────────────────────────────────────
   const handleFileSelect = useCallback(async (file: File) => {
+    let resolvedDocumentId: number | null = null;
     try {
       const doc = await loadPDF(file);
-      const hash = `${file.name}-${file.size}`;
+      const hash = await getDocumentContentHash(file);
+      // Name-and-size mappings from older releases can collide across
+      // different PDFs, so they are intentionally discarded rather than
+      // migrated to the content digest.
+      removeCachedDocumentId(getLegacyDocumentKey(file));
+      resolvedDocumentId = getCachedDocumentId(hash);
 
       dispatch({
         type: 'SET_PDF_DOC',
@@ -236,31 +415,45 @@ export default function Shell() {
         totalPages: doc.numPages,
       });
 
-      // Register (or re-find) the document on the server
+      // Register (or re-find) the document on the server, then cache that ID
+      // against this local PDF hash for a future offline reopen.
       const serverDoc = await upsertDocument({ name: file.name, hash });
-      dispatch({ type: 'SET_DOCUMENT_ID', documentId: serverDoc.id });
+      resolvedDocumentId = serverDoc.id;
+      setCachedDocumentId(hash, serverDoc.id);
+      const queued = await hydrateRemoteDocument(serverDoc.id);
 
-      // Load persisted annotations, measurements, scale in parallel
-      const [apiAnnotations, apiMeasurements, apiScale] = await Promise.all([
-        listAnnotations(serverDoc.id),
-        listMeasurements(serverDoc.id),
-        getDocumentScale(serverDoc.id),
-      ]);
-
-      dispatch({
-        type: 'LOAD_REMOTE_STATE',
-        documentId: serverDoc.id,
-        annotations: mapApiAnnotations(apiAnnotations),
-        measurements: mapApiMeasurements(apiMeasurements),
-        scale: mapApiScale(apiScale),
-      });
+      // If the server is reachable right now, flush the queue immediately
+      // (covers the case where the user reloads after a connectivity gap that
+      // has since resolved).
+      if (queued > 0 && !serverUnreachable) {
+        flushLocalPendingQueue(serverDoc.id);
+      }
 
       setShareMsg(null);
     } catch (err) {
       console.error('Error loading PDF', err);
+      // If this PDF has previously been registered, restore its pending local
+      // work immediately instead of discarding it just because the server is
+      // still unavailable. Remote annotations will hydrate automatically when
+      // connectivity returns.
+      if (resolvedDocumentId) {
+        const queued = restoreOfflinePendingState(resolvedDocumentId);
+        setShareMsg(
+          queued > 0
+            ? `Working offline — restored ${queued} unsaved change${queued === 1 ? '' : 's'}. They will sync when the connection returns.`
+            : 'Working offline — this plan will refresh when the connection returns.',
+        );
+        return;
+      }
       alert('Failed to load PDF file.');
     }
-  }, [dispatch]);
+  }, [
+    dispatch,
+    flushLocalPendingQueue,
+    hydrateRemoteDocument,
+    restoreOfflinePendingState,
+    serverUnreachable,
+  ]);
 
   // ── Snapshot ──────────────────────────────────────────────────────────────
   const handleSnapshot = async () => {
@@ -392,6 +585,11 @@ export default function Shell() {
               {pdfDoc && <span>{state.documentData?.name}</span>}
               {pdfDoc && <span>Page {state.currentPage} / {state.totalPages}</span>}
               {documentId && <span className="text-primary/60">doc#{documentId}</span>}
+              {pendingCount > 0 && (
+                <span className="text-amber-600 font-semibold">
+                  ⏳ {pendingCount} unsaved change{pendingCount !== 1 ? 's' : ''} pending sync
+                </span>
+              )}
             </div>
             <div className="flex gap-4">
               {state.activeTool === 'set-scale' && <span className="text-primary font-bold">Pick 2 points to set scale…</span>}
