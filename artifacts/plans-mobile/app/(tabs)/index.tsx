@@ -19,8 +19,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { useColors } from '@/hooks/useColors';
+import { usePdfImport } from '@/hooks/usePdfImport';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { listMeasurements, upsertDocument } from '@workspace/api-client-react';
+import { listMeasurements } from '@workspace/api-client-react';
 
 const DOCS_STORAGE_KEY = '@plans_mobile_documents_v1';
 
@@ -37,7 +38,7 @@ export async function loadLocalDocuments(): Promise<LocalDocument[]> {
   return data ? (JSON.parse(data) as LocalDocument[]) : [];
 }
 
-async function saveLocalDocuments(docs: LocalDocument[]): Promise<void> {
+export async function saveLocalDocuments(docs: LocalDocument[]): Promise<void> {
   await AsyncStorage.setItem(DOCS_STORAGE_KEY, JSON.stringify(docs));
 }
 
@@ -45,6 +46,7 @@ export default function DocumentsScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const { importFromUri } = usePdfImport();
   const [refreshing, setRefreshing] = useState(false);
 
   const topPad = Platform.OS === 'web' ? 67 : insets.top;
@@ -55,6 +57,7 @@ export default function DocumentsScreen() {
     queryFn: loadLocalDocuments,
   });
 
+  // + button: open the system document picker then hand off to the shared import logic
   const addDocMutation = useMutation({
     mutationFn: async () => {
       const result = await DocumentPicker.getDocumentAsync({
@@ -64,40 +67,7 @@ export default function DocumentsScreen() {
       if (result.canceled) return null;
 
       const asset = result.assets[0];
-      const name = asset.name;
-      const size = asset.size ?? 0;
-      // Must match the web app's fingerprint: `${file.name}-${file.size}`
-      const hash = `${name}-${size}`;
-      // Sanitize separately for the local filesystem path (spaces/punctuation unsafe in paths)
-      const safeFilename = name.replace(/[^a-zA-Z0-9]/g, '_');
-
-      // Copy to app's persistent directory
-      const destPath =
-        FileSystem.documentDirectory + safeFilename.slice(0, 40) + `_${size}.pdf`;
-      await FileSystem.copyAsync({ from: asset.uri, to: destPath });
-
-      // Register with the API (upserts by hash)
-      const doc = await upsertDocument({ name, hash });
-
-      // Save locally
-      const existing = await loadLocalDocuments();
-      const newDoc: LocalDocument = {
-        id: doc.id,
-        name: doc.name,
-        localPath: destPath,
-        hash: doc.hash,
-        addedAt: new Date().toISOString(),
-      };
-      const filtered = existing.filter((d) => d.hash !== hash);
-      await saveLocalDocuments([newDoc, ...filtered]);
-
-      return newDoc;
-    },
-    onSuccess: (doc) => {
-      if (!doc) return;
-      queryClient.invalidateQueries({ queryKey: ['localDocuments'] });
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.push(`/viewer/${doc.id}`);
+      return importFromUri(asset.uri, asset.name, asset.size ?? 0);
     },
     onError: (error) => {
       Alert.alert('Import Failed', (error as Error).message);
