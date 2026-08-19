@@ -79,11 +79,11 @@ export default function PDFPageViewer() {
   const snapRing = useRef<fabric.Circle | null>(null);
   const isSnapping = useRef(false);
 
-  /** Show a transient hint message to the user, auto-dismissed after 2.5 s. */
+  /** Show a transient hint message to the user, auto-dismissed after 3 s. */
   const showAreaHint = useCallback((msg: string) => {
     setAreaHint(msg);
     if (areaHintTimer.current) clearTimeout(areaHintTimer.current);
-    areaHintTimer.current = setTimeout(() => setAreaHint(null), 2500);
+    areaHintTimer.current = setTimeout(() => setAreaHint(null), 3000);
   }, []);
 
   /** Remove all area-drawing preview objects from the canvas and reset state. */
@@ -270,6 +270,7 @@ export default function PDFPageViewer() {
         if (!isDrawing.current) {
           isDrawing.current = true;
           points.current = [pointer];
+          showAreaHint('Backspace to undo last point · Escape to cancel');
         } else {
           // Resolve the effective point: snap to the first point when within
           // the snap radius so the stored coordinate matches the visual preview.
