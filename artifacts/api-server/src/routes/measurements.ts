@@ -47,7 +47,23 @@ router.post("/documents/:documentId/measurements", async (req, res): Promise<voi
     unit: body.data.unit,
     points: body.data.points,
     fabricData: body.data.fabricData,
-  }).returning();
+  }).onConflictDoNothing().returning();
+
+  // When the id already exists (e.g. a retried request whose first attempt
+  // actually succeeded), the insert is a no-op and `row` is undefined.
+  // Fetch the existing record so we can return it to the caller.
+  if (!row) {
+    const [existing] = await db.select().from(measurementsTable)
+      .where(eq(measurementsTable.id, body.data.id));
+    if (!existing) { res.status(409).json({ error: "Conflict" }); return; }
+    res.status(200).json(CreateMeasurementResponse.parse({
+      ...existing,
+      points: existing.points as Array<Record<string, unknown>>,
+      fabricData: existing.fabricData as Record<string, unknown>,
+      createdAt: existing.createdAt.toISOString(),
+    }));
+    return;
+  }
 
   res.status(201).json(CreateMeasurementResponse.parse({
     ...row,

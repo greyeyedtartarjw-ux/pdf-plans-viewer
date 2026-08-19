@@ -14,13 +14,36 @@ import {
 import { toast } from '@/hooks/use-toast';
 
 /**
- * Attempt `fn` once; on failure, retry once more. If the second attempt also
+ * Return true when an HTTP error status should never be retried.
+ * 4xx errors (except 429 Too Many Requests) are client errors that a retry
+ * cannot fix. 409 Conflict in particular signals the record already exists.
+ */
+function isNonRetryable(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = (err as { status?: unknown }).status;
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+  }
+  return false;
+}
+
+/**
+ * Attempt `fn` once; on failure, retry once more unless the error is a
+ * non-retryable HTTP status (any 4xx except 429). If the final attempt also
  * fails, show a destructive toast with `errorTitle` and the caught message.
  */
 async function saveWithRetry<T>(fn: () => Promise<T>, errorTitle: string): Promise<void> {
   try {
     await fn();
-  } catch {
+  } catch (firstErr) {
+    if (isNonRetryable(firstErr)) {
+      console.error(errorTitle, firstErr);
+      toast({
+        variant: 'destructive',
+        title: errorTitle,
+        description: firstErr instanceof Error ? firstErr.message : 'Please check your connection and try again.',
+      });
+      return;
+    }
     try {
       await fn();
     } catch (err) {

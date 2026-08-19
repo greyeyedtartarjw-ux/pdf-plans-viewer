@@ -42,7 +42,22 @@ router.post("/documents/:documentId/annotations", async (req, res): Promise<void
     pageNumber: body.data.pageNumber,
     type: body.data.type,
     fabricData: body.data.fabricData,
-  }).returning();
+  }).onConflictDoNothing().returning();
+
+  // When the id already exists (e.g. a retried request whose first attempt
+  // actually succeeded), the insert is a no-op and `row` is undefined.
+  // Fetch the existing record so we can return it to the caller.
+  if (!row) {
+    const [existing] = await db.select().from(annotationsTable)
+      .where(eq(annotationsTable.id, body.data.id));
+    if (!existing) { res.status(409).json({ error: "Conflict" }); return; }
+    res.status(200).json(CreateAnnotationResponse.parse({
+      ...existing,
+      fabricData: existing.fabricData as Record<string, unknown>,
+      createdAt: existing.createdAt.toISOString(),
+    }));
+    return;
+  }
 
   res.status(201).json(CreateAnnotationResponse.parse({
     ...row,
