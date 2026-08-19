@@ -1,4 +1,4 @@
-import { Scale } from '../types';
+import type { Measurement, Scale } from '../types';
 
 /**
  * Resolve the effective point for an area-polygon click.
@@ -80,4 +80,47 @@ export const formatMeasurement = (pixels: number, scale: Scale, isArea: boolean 
       label: `${realDistance.toFixed(2)} ${scale.realWorldUnit}`
     };
   }
+};
+
+/** Convert a pixel-valued measurement after a calibration is saved. */
+export const recalculatePixelMeasurement = (
+  measurement: Measurement,
+  scale: Scale,
+): Pick<Measurement, 'label' | 'realWorldValue' | 'unit'> => {
+  const formatted = formatMeasurement(
+    measurement.realWorldValue,
+    scale,
+    measurement.type === 'area',
+  );
+  return {
+    label: formatted.label,
+    realWorldValue: formatted.value,
+    unit: formatted.unit,
+  };
+};
+
+/**
+ * Keep Fabric's serialized Text object in sync with a recalculated sidebar
+ * label. Fabric groups contain the visual line/polygon and one Text child.
+ */
+export const updateFabricMeasurementLabel = (
+  data: Record<string, unknown>,
+  label: string,
+): Record<string, unknown> => {
+  const updateValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(updateValue);
+    if (!value || typeof value !== 'object') return value;
+
+    const record = value as Record<string, unknown>;
+    const copy = Object.fromEntries(
+      Object.entries(record).map(([key, child]) => [key, updateValue(child)]),
+    );
+    const type = typeof copy.type === 'string' ? copy.type.toLowerCase() : '';
+    if (type.includes('text') && typeof copy.text === 'string') {
+      copy.text = label;
+    }
+    return copy;
+  };
+
+  return updateValue(data) as Record<string, unknown>;
 };

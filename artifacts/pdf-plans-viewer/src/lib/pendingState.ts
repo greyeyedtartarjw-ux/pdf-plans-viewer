@@ -50,6 +50,20 @@ export function mergePendingState(
       for (const page of Object.keys(measurements)) {
         measurements[+page] = measurements[+page].filter((measurement) => measurement.id !== op.id);
       }
+    } else if (op.opType === 'update_measurement') {
+      for (const page of Object.keys(measurements)) {
+        measurements[+page] = measurements[+page].map((measurement) =>
+          measurement.id === op.id
+            ? {
+                ...measurement,
+                label: op.label,
+                realWorldValue: op.realWorldValue,
+                unit: op.unit,
+                data: op.fabricData,
+              }
+            : measurement,
+        );
+      }
     }
   }
 

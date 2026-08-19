@@ -169,6 +169,32 @@ export const CreateMeasurementResponse = zod.object({
 })
 
 
+export const UpdateMeasurementParams = zod.object({
+  "documentId": zod.coerce.number(),
+  "measurementId": zod.coerce.string()
+})
+
+export const UpdateMeasurementBody = zod.object({
+  "label": zod.string(),
+  "realWorldValue": zod.number(),
+  "unit": zod.string(),
+  "fabricData": zod.record(zod.string(), zod.unknown()).optional()
+})
+
+export const UpdateMeasurementResponse = zod.object({
+  "id": zod.string(),
+  "documentId": zod.number(),
+  "pageNumber": zod.number(),
+  "type": zod.enum(['distance', 'area']),
+  "label": zod.string(),
+  "realWorldValue": zod.number(),
+  "unit": zod.string(),
+  "points": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabricData": zod.record(zod.string(), zod.unknown()),
+  "createdAt": zod.string()
+})
+
+
 export const DeleteMeasurementParams = zod.object({
   "documentId": zod.coerce.number(),
   "measurementId": zod.coerce.string()

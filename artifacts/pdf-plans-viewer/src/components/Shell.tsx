@@ -21,15 +21,23 @@ import {
   deleteAnnotation,
   createMeasurement,
   deleteMeasurement,
+  updateMeasurement,
   useHealthCheck,
   getHealthCheckQueryKey,
 } from '@workspace/api-client-react';
 import type { Scale, Annotation, Measurement } from '../types';
 import {
+  recalculatePixelMeasurement,
+  updateFabricMeasurementLabel,
+} from '../lib/measurementUtils';
+import {
+  addPendingOp,
   getCachedDocumentId,
   getPendingOps,
   countPendingOps,
   flushPendingOps,
+  getPendingScaleUpdate,
+  nextPendingSequence,
   QUEUE_CHANGED_EVENT,
   removeCachedDocumentId,
   setCachedDocumentId,
@@ -186,6 +194,20 @@ export default function Shell() {
           });
         } else if (op.opType === 'delete_measurement') {
           await deleteMeasurement(op.documentId, op.id);
+        } else if (op.opType === 'update_measurement') {
+          await updateMeasurement(op.documentId, op.id, {
+            label: op.label,
+            realWorldValue: op.realWorldValue,
+            unit: op.unit,
+            fabricData: op.fabricData,
+          });
+        } else if (op.opType === 'set_scale') {
+          await setDocumentScale(op.documentId, {
+            isSet: op.isSet,
+            pixelsPerUnit: op.pixelsPerUnit,
+            unit: op.unit,
+            realWorldUnit: op.realWorldUnit,
+          });
         }
       },
       (op, error) => {
@@ -214,6 +236,89 @@ export default function Shell() {
     return result;
   }, []);
 
+  /**
+   * Convert legacy pixel measurements as soon as calibration is saved. Local
+   * state is updated first so labels redraw immediately; failed API updates
+   * are durable queue entries and replay after reconnect or reload.
+   */
+  const handleScaleSaved = useCallback((savedScale: Scale) => {
+    if (documentId) {
+      // Queue first so a lost request cannot discard a calibration. The flush
+      // replays scale before later recalculated measurement updates.
+      addPendingOp({
+        opType: 'set_scale',
+        documentId,
+        id: 'scale',
+        isSet: savedScale.set,
+        pixelsPerUnit: savedScale.pixelsPerUnit,
+        unit: savedScale.unit,
+        realWorldUnit: savedScale.realWorldUnit,
+        timestamp: Date.now(),
+        sequence: nextPendingSequence(),
+      });
+      setPendingCount(countPendingOps(documentId));
+      void flushLocalPendingQueue(documentId).catch((error) => {
+        console.error('Could not save scale', error);
+      });
+    }
+
+    const pixelMeasurements = Object.entries(state.measurements).flatMap(
+      ([page, measurements]) =>
+        measurements
+          .filter((measurement) => measurement.unit === 'px' || measurement.unit === 'px²')
+          .map((measurement) => ({ page: Number(page), measurement })),
+    );
+
+    for (const { page, measurement } of pixelMeasurements) {
+      const values = recalculatePixelMeasurement(measurement, savedScale);
+      const fabricData = updateFabricMeasurementLabel(measurement.data, values.label);
+      dispatch({
+        type: 'UPDATE_MEASUREMENT_VALUES',
+        page,
+        id: measurement.id,
+        ...values,
+        data: fabricData,
+      });
+
+      if (!documentId) continue;
+
+      const queueUpdate = () => {
+        addPendingOp({
+          opType: 'update_measurement',
+          documentId,
+          id: measurement.id,
+          pageNumber: page,
+          ...values,
+          fabricData,
+          timestamp: Date.now(),
+          sequence: nextPendingSequence(),
+        });
+        setPendingCount(countPendingOps(documentId));
+        setRetrySuccess(false);
+        setShowRetryBanner(true);
+      };
+
+      if (serverUnreachable) {
+        queueUpdate();
+        continue;
+      }
+
+      updateMeasurement(documentId, measurement.id, {
+        ...values,
+        fabricData,
+      }).catch((error) => {
+        console.error('Could not recalculate measurement', error);
+        queueUpdate();
+      });
+    }
+  }, [
+    dispatch,
+    documentId,
+    flushLocalPendingQueue,
+    serverUnreachable,
+    state.measurements,
+  ]);
+
   /** Restore queued local work without requiring the API to be reachable. */
   const restoreOfflinePendingState = useCallback((docId: number) => {
     const pendingOps = getPendingOps(docId);
@@ -223,7 +328,17 @@ export default function Shell() {
       documentId: docId,
       annotations: merged.annotations,
       measurements: merged.measurements,
-      scale: DEFAULT_SCALE,
+      scale: (() => {
+        const pendingScale = getPendingScaleUpdate(docId);
+        return pendingScale
+          ? {
+              set: pendingScale.isSet,
+              pixelsPerUnit: pendingScale.pixelsPerUnit,
+              unit: pendingScale.unit,
+              realWorldUnit: pendingScale.realWorldUnit,
+            }
+          : DEFAULT_SCALE;
+      })(),
     });
     setPendingCount(pendingOps.length);
     needsRemoteHydrationRef.current = true;
@@ -248,7 +363,17 @@ export default function Shell() {
       documentId: docId,
       annotations: merged.annotations,
       measurements: merged.measurements,
-      scale: mapApiScale(apiScale),
+      scale: (() => {
+        const pendingScale = getPendingScaleUpdate(docId);
+        return pendingScale
+          ? {
+              set: pendingScale.isSet,
+              pixelsPerUnit: pendingScale.pixelsPerUnit,
+              unit: pendingScale.unit,
+              realWorldUnit: pendingScale.realWorldUnit,
+            }
+          : mapApiScale(apiScale);
+      })(),
     });
     setPendingCount(pendingOps.length);
     needsRemoteHydrationRef.current = false;
@@ -384,17 +509,6 @@ export default function Shell() {
       });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ── Persist scale to API when it changes ──────────────────────────────────
-  useEffect(() => {
-    if (!documentId || !scale.set) return;
-    setDocumentScale(documentId, {
-      isSet: scale.set,
-      pixelsPerUnit: scale.pixelsPerUnit,
-      unit: scale.unit,
-      realWorldUnit: scale.realWorldUnit,
-    }).catch(console.error);
-  }, [documentId, scale]);
 
   // ── Load a PDF file ───────────────────────────────────────────────────────
   const handleFileSelect = useCallback(async (file: File) => {
@@ -601,7 +715,11 @@ export default function Shell() {
       </div>
 
       {showScaleDialog && (
-        <ScaleDialog onClose={() => setShowScaleDialog(false)} pixelDistance={pixelDistanceToScale} />
+        <ScaleDialog
+          onClose={() => setShowScaleDialog(false)}
+          pixelDistance={pixelDistanceToScale}
+          onScaleSaved={handleScaleSaved}
+        />
       )}
 
       {/* Outage modal — shown when server drops while user is actively drawing */}

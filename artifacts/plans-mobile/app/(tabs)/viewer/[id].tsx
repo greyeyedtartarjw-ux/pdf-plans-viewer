@@ -27,6 +27,7 @@ import {
   getDocumentScale,
   listMeasurements,
   setDocumentScale,
+  updateMeasurement,
 } from '@workspace/api-client-react';
 import { createViewerHtml } from '@/constants/viewerHtml';
 import {
@@ -34,6 +35,11 @@ import {
   toPdfArea,
   toPdfDistance,
 } from '@/lib/pdfCoordinates';
+import {
+  recalculatedMeasurementValues,
+  recalculatePixelMeasurements,
+  type PixelMeasurement,
+} from '@/lib/measurementRecalculation';
 import type { LocalDocument } from '../index';
 import { useOfflineQueue } from '@/hooks/useOfflineQueue';
 import type { PendingMeasurement } from '@/hooks/useOfflineQueue';
@@ -145,6 +151,10 @@ export default function ViewerScreen() {
   const [loadingPdf, setLoadingPdf] = useState(true);
   const [showPanel, setShowPanel] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [recalculationProgress, setRecalculationProgress] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
 
   // Calibration state
   const [calibModal, setCalibModal] = useState(false);
@@ -241,7 +251,9 @@ export default function ViewerScreen() {
 
   const measurements: DisplayMeasurement[] = [
     // Pending (locally stored, not yet confirmed by server)
-    ...pendingItems.map((p): DisplayMeasurement => ({
+    ...pendingItems
+      .filter((p) => p.operation !== 'update')
+      .map((p): DisplayMeasurement => ({
       id: p.localId,
       pageNumber: p.input.pageNumber,
       type: p.input.type,
@@ -253,7 +265,7 @@ export default function ViewerScreen() {
       createdAt: p.createdAt,
       isPending: true,
       localId: p.localId,
-    })),
+      })),
     // Confirmed (API)
     ...confirmedMeasurements.map((m): DisplayMeasurement => ({
       ...m,
@@ -302,6 +314,29 @@ export default function ViewerScreen() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['scale', docId] });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    },
+  });
+
+  const updateMeasurementMutation = useMutation({
+    mutationFn: ({
+      measurementId,
+      input,
+    }: {
+      measurementId: string;
+      input: Parameters<typeof updateMeasurement>[2];
+    }) => updateMeasurement(docId, measurementId, input),
+    onSuccess: async (updated) => {
+      const cached = await upsertCachedMeasurement(docId, updated);
+      queryClient.setQueryData(['measurements-cache', docId], cached);
+      queryClient.setQueryData(
+        ['measurements', docId],
+        (current: typeof apiMeasurements | undefined) =>
+          current
+            ? current.map((measurement) =>
+                measurement.id === updated.id ? updated : measurement,
+              )
+            : cached,
+      );
     },
   });
 
@@ -510,6 +545,138 @@ export default function ViewerScreen() {
     }
   }
 
+  async function applyPixelMeasurementRecalculation(
+    pixelMeasurements: PixelMeasurement[],
+    savedPixelsPerUnit: number,
+    savedRealWorldUnit: string,
+  ) {
+    setRecalculationProgress({ completed: 0, total: pixelMeasurements.length });
+    const failedMeasurements = await recalculatePixelMeasurements(
+      pixelMeasurements,
+      savedPixelsPerUnit,
+      savedRealWorldUnit,
+      {
+        updatePending: async (measurement, values) => {
+          const pending = pendingItems.find((item) => item.localId === measurement.id);
+          if (!pending) throw new Error('Pending measurement is no longer available');
+          await enqueue({
+            ...pending,
+            input: {
+              ...pending.input,
+              ...values,
+            },
+          });
+        },
+        updateConfirmed: (measurement, values) =>
+          updateMeasurementMutation.mutateAsync({
+            measurementId: measurement.id,
+            input: values,
+          }),
+        onProgress: (completed, total) =>
+          setRecalculationProgress({ completed, total }),
+      },
+    );
+    setRecalculationProgress(null);
+
+    for (const failed of failedMeasurements) {
+      if (failed.isPending) continue;
+      const source = confirmedMeasurements.find((measurement) => measurement.id === failed.id);
+      if (!source) continue;
+      const values = recalculatedMeasurementValues(
+        failed,
+        savedPixelsPerUnit,
+        savedRealWorldUnit,
+      );
+      const pendingUpdate: PendingMeasurement = {
+        localId: `measurement-update:${source.id}`,
+        docId,
+        operation: 'update',
+        input: {
+          id: source.id,
+          pageNumber: source.pageNumber,
+          type: source.type,
+          label: values.label,
+          realWorldValue: values.realWorldValue,
+          unit: values.unit,
+          points: source.points as Record<string, unknown>[],
+          fabricData: source.fabricData as Record<string, unknown>,
+        },
+        createdAt: new Date().toISOString(),
+      };
+      await enqueue(pendingUpdate);
+      const cached = await upsertCachedMeasurement(docId, {
+        ...source,
+        ...values,
+      });
+      queryClient.setQueryData(['measurements-cache', docId], cached);
+      queryClient.setQueryData(
+        ['measurements', docId],
+        (current: typeof apiMeasurements | undefined) =>
+          current?.map((measurement) =>
+            measurement.id === source.id ? { ...measurement, ...values } : measurement,
+          ),
+      );
+    }
+
+    if (pixelMeasurements.some((measurement) => !measurement.isPending)) {
+      await queryClient.invalidateQueries({ queryKey: ['measurements', docId] });
+    }
+
+    if (failedMeasurements.length > 0) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      Alert.alert(
+        'Some measurements were not updated',
+        `${failedMeasurements.length} measurement${failedMeasurements.length === 1 ? '' : 's'} could not be recalculated.`,
+        [
+          { text: 'Later', style: 'cancel' },
+          {
+            text: 'Retry',
+            onPress: () => {
+              void applyPixelMeasurementRecalculation(
+                failedMeasurements,
+                savedPixelsPerUnit,
+                savedRealWorldUnit,
+              );
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }
+
+  function startPixelMeasurementRecalculation(
+    savedPixelsPerUnit: number,
+    savedRealWorldUnit: string,
+  ) {
+    const pixelMeasurements: PixelMeasurement[] = measurements
+      .filter(
+        (measurement) => measurement.unit === 'px' || measurement.unit === 'px²',
+      )
+      .map((measurement) => ({
+        id: measurement.id,
+        type: measurement.type,
+        realWorldValue: measurement.realWorldValue,
+        isPending: measurement.isPending,
+      }));
+
+    if (pixelMeasurements.length === 0) {
+      Alert.alert(
+        'Scale saved',
+        `1 ${savedRealWorldUnit} = ${savedPixelsPerUnit.toFixed(2)} plan units. New measurements will now show real-world distances.`,
+      );
+      return;
+    }
+
+    void applyPixelMeasurementRecalculation(
+      pixelMeasurements,
+      savedPixelsPerUnit,
+      savedRealWorldUnit,
+    );
+  }
+
   // --- Calibration save ---
   async function saveScale() {
     const num = parseFloat(calibValue);
@@ -520,16 +687,16 @@ export default function ViewerScreen() {
     const pixelsPerUnit = calibPixelDist / num;
     setCalibSaving(true);
     try {
-      await scaleMutation.mutateAsync({
+      const savedScale = await scaleMutation.mutateAsync({
         pixelsPerUnit,
         unit: 'px',
         realWorldUnit: calibUnit,
         isSet: true,
       } as Parameters<typeof setDocumentScale>[1]);
       closeCalibrationModal();
-      Alert.alert(
-        'Scale saved',
-        `1 ${calibUnit} = ${pixelsPerUnit.toFixed(2)} plan units. New measurements will now show real-world distances.`,
+      startPixelMeasurementRecalculation(
+        savedScale.pixelsPerUnit,
+        savedScale.realWorldUnit,
       );
     } catch {
       Alert.alert('Save failed', 'Could not save the scale. Please try again.');
@@ -685,6 +852,21 @@ export default function ViewerScreen() {
               : `${pendingCount} measurement${pendingCount !== 1 ? 's' : ''} pending sync — tap to retry`}
           </Text>
         </TouchableOpacity>
+      )}
+
+      {recalculationProgress && (
+        <View
+          style={[
+            styles.recalculationBanner,
+            { backgroundColor: colors.muted, borderBottomColor: colors.border },
+          ]}
+        >
+          <ActivityIndicator size="small" color={colors.foreground} />
+          <Text style={[styles.recalculationBannerText, { color: colors.foreground }]}>
+            Recalculating measurements… {recalculationProgress.completed}/
+            {recalculationProgress.total}
+          </Text>
+        </View>
       )}
 
       {/* PDF WebView */}
@@ -1108,6 +1290,18 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
       fontSize: 12,
       fontFamily: 'Inter_500Medium',
       flex: 1,
+    },
+    recalculationBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 7,
+      paddingHorizontal: 14,
+      paddingVertical: 7,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    recalculationBannerText: {
+      fontSize: 12,
+      fontFamily: 'Inter_500Medium',
     },
     pdfWrap: {
       flex: 1,

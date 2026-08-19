@@ -61,11 +61,39 @@ export interface PendingMeasurementDelete {
   sequence: number;
 }
 
+export interface PendingMeasurementUpdate {
+  opType: 'update_measurement';
+  documentId: number;
+  id: string;
+  pageNumber: number;
+  label: string;
+  realWorldValue: number;
+  unit: string;
+  fabricData: Record<string, unknown>;
+  timestamp: number;
+  sequence: number;
+}
+
+export interface PendingScaleUpdate {
+  opType: 'set_scale';
+  documentId: number;
+  /** One scale record exists per document, so repeated calibrations replace it. */
+  id: 'scale';
+  isSet: boolean;
+  pixelsPerUnit: number;
+  unit: string;
+  realWorldUnit: string;
+  timestamp: number;
+  sequence: number;
+}
+
 export type PendingOp =
   | PendingAnnotationCreate
   | PendingAnnotationDelete
   | PendingMeasurementCreate
-  | PendingMeasurementDelete;
+  | PendingMeasurementDelete
+  | PendingMeasurementUpdate
+  | PendingScaleUpdate;
 
 let lastSequence = 0;
 
@@ -150,6 +178,13 @@ export function getPendingOps(documentId: number): PendingOp[] {
   } catch {
     return [];
   }
+}
+
+/** The latest local calibration overrides a stale server scale after reload. */
+export function getPendingScaleUpdate(documentId: number): PendingScaleUpdate | undefined {
+  return getPendingOps(documentId)
+    .filter((op): op is PendingScaleUpdate => op.opType === 'set_scale')
+    .at(-1);
 }
 
 function setPendingOps(documentId: number, ops: PendingOp[]): void {

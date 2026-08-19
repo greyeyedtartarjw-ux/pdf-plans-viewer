@@ -98,3 +98,50 @@ describe("POST /api/documents/:documentId/measurements — idempotent create", (
     expect(rows).toHaveLength(1);
   });
 });
+
+describe("PUT /api/documents/:documentId/measurements/:measurementId", () => {
+  let documentId: number;
+
+  beforeEach(async () => {
+    documentId = await createDocument();
+  });
+
+  afterEach(async () => {
+    await db.delete(documentsTable).where(eq(documentsTable.id, documentId));
+  });
+
+  it("updates recalculated values and the matching Fabric label", async () => {
+    const id = randomUUID();
+    await request(app)
+      .post(`/api/documents/${documentId}/measurements`)
+      .send(sampleMeasurement(id, documentId))
+      .expect(201);
+
+    const res = await request(app)
+      .put(`/api/documents/${documentId}/measurements/${id}`)
+      .send({
+        label: "2.50 m",
+        realWorldValue: 2.5,
+        unit: "m",
+        fabricData: {
+          type: "Group",
+          objects: [{ type: "Text", text: "2.50 m" }],
+        },
+      })
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      id,
+      documentId,
+      label: "2.50 m",
+      realWorldValue: 2.5,
+      unit: "m",
+      fabricData: {
+        type: "Group",
+        objects: [{ type: "Text", text: "2.50 m" }],
+      },
+      pageNumber: 1,
+      type: "distance",
+    });
+  });
+});

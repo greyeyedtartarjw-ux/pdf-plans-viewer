@@ -12,6 +12,8 @@ export const PENDING_MEASUREMENTS_KEY = '@plans_mobile_pending_measurements_v1';
 export interface PendingMeasurement {
   localId: string;
   docId: number;
+  /** Missing on older records; those are regular create operations. */
+  operation?: 'create' | 'update';
   input: {
     id: string;
     pageNumber: number;
@@ -93,12 +95,12 @@ export function dequeue(localId: string): Promise<PendingMeasurement[]> {
 }
 
 /**
- * Attempt to sync all pending items via `createFn`.
+ * Attempt to sync all pending items via `syncFn`.
  * Successfully synced items are removed; failures stay for the next attempt.
  * Returns the remaining queue after the flush.
  */
 export function flush(
-  createFn: (docId: number, input: PendingMeasurement['input']) => Promise<unknown>,
+  syncFn: (item: PendingMeasurement) => Promise<unknown>,
 ): Promise<PendingMeasurement[]> {
   return withLock(async () => {
     const queue = await _load();
@@ -106,7 +108,7 @@ export function flush(
 
     for (const item of queue) {
       try {
-        await createFn(item.docId, item.input);
+        await syncFn(item);
         remaining = remaining.filter((p) => p.localId !== item.localId);
       } catch {
         // Leave for next retry

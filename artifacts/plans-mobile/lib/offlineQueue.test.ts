@@ -55,9 +55,9 @@ describe('offline measurement queue', () => {
     await enqueue(pending('saved'));
     await enqueue(pending('retry'));
 
-    const remaining = await flush(async (_docId, input) => {
-      if (input.id === 'retry') throw new Error('offline');
-      return { id: input.id };
+    const remaining = await flush(async (item) => {
+      if (item.input.id === 'retry') throw new Error('offline');
+      return { id: item.input.id };
     });
 
     expect(remaining.map((item) => item.localId)).toEqual(['retry']);
@@ -92,5 +92,25 @@ describe('offline measurement queue', () => {
       'created-during-sync',
     ]);
     await dequeue('created-during-sync');
+  });
+
+  it('persists a failed recalculation update for the next app session', async () => {
+    const update = {
+      ...pending('recalculate-distance'),
+      operation: 'update' as const,
+      input: {
+        ...pending('recalculate-distance').input,
+        label: '3.00 m',
+        realWorldValue: 3,
+        unit: 'm',
+      },
+    };
+    await enqueue(update);
+
+    await flush(async () => {
+      throw new Error('offline');
+    });
+
+    expect(await loadQueue()).toEqual([update]);
   });
 });

@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
 import { useViewerContext } from '../store/ViewerContext';
+import type { Scale } from '../types';
 import { X, Ruler } from 'lucide-react';
 
 interface ScaleDialogProps {
   onClose: () => void;
   pixelDistance: number;
+  onScaleSaved: (scale: Scale) => void;
 }
 
-export default function ScaleDialog({ onClose, pixelDistance }: ScaleDialogProps) {
+export default function ScaleDialog({ onClose, pixelDistance, onScaleSaved }: ScaleDialogProps) {
   const { state, dispatch } = useViewerContext();
   const [realValue, setRealValue] = useState('1');
   const [unit, setUnit] = useState(state.scale.realWorldUnit !== 'px' ? state.scale.realWorldUnit : 'm');
@@ -19,15 +21,17 @@ export default function ScaleDialog({ onClose, pixelDistance }: ScaleDialogProps
 
     const pixelsPerUnit = pixelDistance / val;
 
+    const savedScale: Scale = {
+      set: true,
+      pixelsPerUnit,
+      unit: 'px',
+      realWorldUnit: unit,
+    };
     dispatch({
       type: 'SET_SCALE',
-      scale: {
-        set: true,
-        pixelsPerUnit,
-        unit: 'px',
-        realWorldUnit: unit
-      }
+      scale: savedScale,
     });
+    onScaleSaved(savedScale);
     
     // Also reset active tool back to pan
     dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });

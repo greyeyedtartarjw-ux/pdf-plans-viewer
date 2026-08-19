@@ -23,6 +23,8 @@ export * from './measurementInputPointsItem';
 export * from './measurementInputType';
 export * from './measurementPointsItem';
 export * from './measurementType';
+export * from './measurementUpdateInput';
+export * from './measurementUpdateInputFabricData';
 export * from './scaleConfig';
 export * from './scaleInput';
 export * from './share';

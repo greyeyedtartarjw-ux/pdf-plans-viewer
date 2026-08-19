@@ -122,6 +122,15 @@ export interface MeasurementInput {
   fabricData: MeasurementInputFabricData;
 }
 
+export type MeasurementUpdateInputFabricData = { [key: string]: unknown };
+
+export interface MeasurementUpdateInput {
+  label: string;
+  realWorldValue: number;
+  unit: string;
+  fabricData?: MeasurementUpdateInputFabricData;
+}
+
 export interface Share {
   id: number;
   token: string;

@@ -42,6 +42,15 @@ type Action =
   | { type: 'ADD_MEASUREMENT'; page: number; measurement: Measurement }
   | { type: 'REMOVE_MEASUREMENT'; page: number; id: string }
   | { type: 'RENAME_MEASUREMENT'; page: number; id: string; label: string }
+  | {
+      type: 'UPDATE_MEASUREMENT_VALUES';
+      page: number;
+      id: string;
+      label: string;
+      realWorldValue: number;
+      unit: string;
+      data: Record<string, unknown>;
+    }
   | { type: 'REORDER_MEASUREMENTS'; orderedIds: string[] }
   | { type: 'CLEAR_MEASUREMENTS' }
   | { type: 'SET_SEARCH_STATE'; query: string; results: SearchResult[]; isSearching: boolean }
@@ -169,6 +178,25 @@ function reducer(state: ViewerState, action: Action): ViewerState {
             m.id === action.id ? { ...m, label: action.label } : m
           ),
         },
+      };
+    case 'UPDATE_MEASUREMENT_VALUES':
+      return {
+        ...state,
+        measurements: {
+          ...state.measurements,
+          [action.page]: (state.measurements[action.page] || []).map(m =>
+            m.id === action.id
+              ? {
+                  ...m,
+                  label: action.label,
+                  realWorldValue: action.realWorldValue,
+                  unit: action.unit,
+                  data: action.data,
+                }
+              : m,
+          ),
+        },
+        remoteStateRevision: state.remoteStateRevision + 1,
       };
     case 'REORDER_MEASUREMENTS':
       return { ...state, measurementOrder: action.orderedIds };

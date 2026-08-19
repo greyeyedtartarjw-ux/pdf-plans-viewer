@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { deduplicatePoints, calculateArea, calculateDistance, formatMeasurement, resolveSnapPoint } from '../measurementUtils';
+import {
+  deduplicatePoints,
+  calculateArea,
+  calculateDistance,
+  formatMeasurement,
+  recalculatePixelMeasurement,
+  resolveSnapPoint,
+  updateFabricMeasurementLabel,
+} from '../measurementUtils';
 
 // ---------------------------------------------------------------------------
 // deduplicatePoints
@@ -103,6 +111,68 @@ describe('deduplicatePoints', () => {
       { x: 10, y: 10 }, // same as first but not consecutive — kept
     ];
     expect(deduplicatePoints(pts)).toHaveLength(3);
+  });
+});
+
+describe('recalculatePixelMeasurement', () => {
+  const scale = {
+    set: true,
+    pixelsPerUnit: 10,
+    unit: 'px',
+    realWorldUnit: 'm',
+  };
+
+  it('converts an existing pixel distance to the new real-world scale', () => {
+    expect(recalculatePixelMeasurement({
+      id: 'distance-1',
+      pageNumber: 1,
+      type: 'distance',
+      label: '30.00 px',
+      realWorldValue: 30,
+      unit: 'px',
+      points: [],
+      data: {},
+    }, scale)).toEqual({
+      label: '3.00 m',
+      realWorldValue: 3,
+      unit: 'm',
+    });
+  });
+
+  it('converts an existing pixel area using the squared scale', () => {
+    expect(recalculatePixelMeasurement({
+      id: 'area-1',
+      pageNumber: 1,
+      type: 'area',
+      label: '900.00 px²',
+      realWorldValue: 900,
+      unit: 'px²',
+      points: [],
+      data: {},
+    }, scale)).toEqual({
+      label: '9.00 m²',
+      realWorldValue: 9,
+      unit: 'm²',
+    });
+  });
+
+  it('updates the serialized Fabric text while preserving the shape data', () => {
+    const data = {
+      type: 'Group',
+      objects: [
+        { type: 'Line', stroke: '#f00' },
+        { type: 'Text', text: '900.00 px²', left: 5 },
+      ],
+    };
+
+    expect(updateFabricMeasurementLabel(data, '9.00 m²')).toEqual({
+      type: 'Group',
+      objects: [
+        { type: 'Line', stroke: '#f00' },
+        { type: 'Text', text: '9.00 m²', left: 5 },
+      ],
+    });
+    expect(data.objects[1].text).toBe('900.00 px²');
   });
 });
 

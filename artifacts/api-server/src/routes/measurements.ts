@@ -8,6 +8,9 @@ import {
   ListMeasurementsParams,
   ListMeasurementsResponse,
   CreateMeasurementResponse,
+  UpdateMeasurementBody,
+  UpdateMeasurementParams,
+  UpdateMeasurementResponse,
 } from "@workspace/api-zod";
 
 const router: IRouter = Router();
@@ -66,6 +69,34 @@ router.post("/documents/:documentId/measurements", async (req, res): Promise<voi
   }
 
   res.status(201).json(CreateMeasurementResponse.parse({
+    ...row,
+    points: row.points as Array<Record<string, unknown>>,
+    fabricData: row.fabricData as Record<string, unknown>,
+    createdAt: row.createdAt.toISOString(),
+  }));
+});
+
+// PUT /documents/:documentId/measurements/:measurementId
+router.put("/documents/:documentId/measurements/:measurementId", async (req, res): Promise<void> => {
+  const params = UpdateMeasurementParams.safeParse(req.params);
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
+
+  const body = UpdateMeasurementBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+
+  const [row] = await db.update(measurementsTable)
+    .set(body.data)
+    .where(
+      and(
+        eq(measurementsTable.documentId, params.data.documentId),
+        eq(measurementsTable.id, params.data.measurementId),
+      ),
+    )
+    .returning();
+
+  if (!row) { res.status(404).json({ error: "Measurement not found" }); return; }
+
+  res.json(UpdateMeasurementResponse.parse({
     ...row,
     points: row.points as Array<Record<string, unknown>>,
     fabricData: row.fabricData as Record<string, unknown>,

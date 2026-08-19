@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import NetInfo from '@react-native-community/netinfo';
-import { createMeasurement } from '@workspace/api-client-react';
+import { createMeasurement, updateMeasurement } from '@workspace/api-client-react';
 import { upsertCachedMeasurement } from '@/lib/measurementsCache';
 import {
   enqueue as qEnqueue,
@@ -26,11 +26,6 @@ export function useOfflineQueue() {
   const [isSyncing, setIsSyncing] = useState(false);
   const syncingRef = useRef(false);
 
-  // Load persisted queue on mount
-  useEffect(() => {
-    loadQueue().then(setPendingQueue);
-  }, []);
-
   // ── flush all pending items to the API ───────────────────────────────────
   const flush = useCallback(
     async (
@@ -41,12 +36,22 @@ export function useOfflineQueue() {
       setIsSyncing(true);
 
       try {
-        const remaining = await qFlush(async (docId, input) => {
-          const created = await createMeasurement(docId, input);
+        const remaining = await qFlush(async (item) => {
+          if (item.operation === 'update') {
+            const updated = await updateMeasurement(item.docId, item.input.id, {
+              label: item.input.label,
+              realWorldValue: item.input.realWorldValue,
+              unit: item.input.unit,
+            });
+            await upsertCachedMeasurement(item.docId, updated);
+            return updated;
+          }
+
+          const created = await createMeasurement(item.docId, item.input);
           // A queued save can be the first measurement confirmed during this
           // session, so write it to the offline cache before removing it from
           // the retry queue.
-          await upsertCachedMeasurement(docId, created);
+          await upsertCachedMeasurement(item.docId, created);
           return created;
         });
         setPendingQueue(remaining);
@@ -57,6 +62,16 @@ export function useOfflineQueue() {
     },
     [],
   );
+
+  // Restore persisted work on launch and immediately retry it when possible.
+  // The serialized queue retains failures, so an offline launch simply leaves
+  // them visible until the next connectivity event.
+  useEffect(() => {
+    loadQueue().then((queue) => {
+      setPendingQueue(queue);
+      void flush(queue);
+    });
+  }, [flush]);
 
   // Subscribe to network — flush when online
   useEffect(() => {

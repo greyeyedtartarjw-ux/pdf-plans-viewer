@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { rebuildFabricPage } from '../fabricPageState';
+import { updateFabricMeasurementLabel } from '../measurementUtils';
 
 function createCanvas() {
   const objects: Array<{ id?: string; source: string }> = [];
@@ -81,5 +82,38 @@ describe('Fabric page restoration', () => {
     releaseStale!();
     expect(await staleRender).toBe(false);
     expect(canvas.objects).toEqual([{ id: 'new', source: 'new' }]);
+  });
+
+  it('renders recalibrated distance and area labels from persisted Fabric data', async () => {
+    const canvas = createCanvas();
+    const distanceData = updateFabricMeasurementLabel({
+      type: 'Group',
+      objects: [{ type: 'Line' }, { type: 'Text', text: '30.00 px' }],
+    }, '3.00 m');
+    const areaData = updateFabricMeasurementLabel({
+      type: 'Group',
+      objects: [{ type: 'Polygon' }, { type: 'Text', text: '900.00 px²' }],
+    }, '9.00 m²');
+
+    await rebuildFabricPage(
+      canvas,
+      {},
+      {
+        1: [
+          { id: 'distance', data: distanceData },
+          { id: 'area', data: areaData },
+        ],
+      },
+      1,
+      async ([data]) => [{
+        source: ((data as { objects: Array<{ text?: string }> }).objects[1].text ?? ''),
+      }],
+      () => false,
+    );
+
+    expect(canvas.objects).toEqual([
+      { id: 'distance', source: '3.00 m' },
+      { id: 'area', source: '9.00 m²' },
+    ]);
   });
 });

@@ -5,6 +5,7 @@ import {
   flushPendingOps,
   getCachedDocumentId,
   getPendingOps,
+  getPendingScaleUpdate,
   setCachedDocumentId,
   type PendingOp,
 } from '../pendingQueue';
@@ -266,6 +267,83 @@ describe('persistent pending-operation queue', () => {
     );
 
     expect(serverIds.has(id)).toBe(false);
+    expect(getPendingOps(documentId)).toEqual([]);
+  });
+
+  it('restores a recalculated measurement update after an offline reload', () => {
+    const documentId = 106;
+    addPendingOp({
+      opType: 'update_measurement',
+      documentId,
+      id: 'measurement-1',
+      pageNumber: 1,
+      label: '9.00 m²',
+      realWorldValue: 9,
+      unit: 'm²',
+      fabricData: {
+        type: 'Group',
+        objects: [{ type: 'Text', text: '9.00 m²' }],
+      },
+      timestamp: 1,
+      sequence: 1,
+    });
+
+    const restored = mergePendingState(
+      {},
+      {
+        1: [{
+          id: 'measurement-1',
+          pageNumber: 1,
+          type: 'area',
+          label: '900.00 px²',
+          realWorldValue: 900,
+          unit: 'px²',
+          points: [],
+          data: {},
+        }],
+      },
+      getPendingOps(documentId),
+    );
+
+    expect(restored.measurements[1][0]).toMatchObject({
+      label: '9.00 m²',
+      realWorldValue: 9,
+      unit: 'm²',
+      data: {
+        type: 'Group',
+        objects: [{ type: 'Text', text: '9.00 m²' }],
+      },
+    });
+  });
+
+  it('keeps an offline scale calibration across reload and replays it first', async () => {
+    const documentId = 107;
+    addPendingOp({
+      opType: 'set_scale',
+      documentId,
+      id: 'scale',
+      isSet: true,
+      pixelsPerUnit: 12,
+      unit: 'px',
+      realWorldUnit: 'm',
+      timestamp: 1,
+      sequence: 1,
+    });
+
+    // Reading the queue models reopening the viewer before the API is back.
+    expect(getPendingScaleUpdate(documentId)).toMatchObject({
+      pixelsPerUnit: 12,
+      realWorldUnit: 'm',
+    });
+
+    const calls: string[] = [];
+    await flushPendingOps(
+      documentId,
+      async (op) => { calls.push(op.opType); },
+      isAlreadyApplied,
+    );
+
+    expect(calls).toEqual(['set_scale']);
     expect(getPendingOps(documentId)).toEqual([]);
   });
 });

@@ -27,6 +27,7 @@ import type {
   HealthStatus,
   Measurement,
   MeasurementInput,
+  MeasurementUpdateInput,
   ScaleConfig,
   ScaleInput,
   Share,
@@ -762,6 +763,74 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
         TContext
       > => {
       return useMutation(getCreateMeasurementMutationOptions(options));
+    }
+
+export const getUpdateMeasurementUrl = (documentId: number,
+    measurementId: string,) => {
+
+
+
+
+  return `/api/documents/${documentId}/measurements/${measurementId}`
+}
+
+export const updateMeasurement = async (documentId: number,
+    measurementId: string,
+    measurementUpdateInput: MeasurementUpdateInput, options?: Parameters<typeof customFetch>[1]): Promise<Measurement> => {
+
+  return customFetch<Measurement>(getUpdateMeasurementUrl(documentId,measurementId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(measurementUpdateInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateMeasurementMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateMeasurement>>, TError,{documentId: number;measurementId: string;data: BodyType<MeasurementUpdateInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateMeasurement>>, TError,{documentId: number;measurementId: string;data: BodyType<MeasurementUpdateInput>}, TContext> => {
+
+const mutationKey = ['updateMeasurement'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateMeasurement>>, {documentId: number;measurementId: string;data: BodyType<MeasurementUpdateInput>}> = (props) => {
+          const {documentId,measurementId,data} = props ?? {};
+
+          return  updateMeasurement(documentId,measurementId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateMeasurementMutationResult = NonNullable<Awaited<ReturnType<typeof updateMeasurement>>>
+    export type UpdateMeasurementMutationBody = BodyType<MeasurementUpdateInput>
+    export type UpdateMeasurementMutationError = ErrorType<unknown>
+
+    export const useUpdateMeasurement = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateMeasurement>>, TError,{documentId: number;measurementId: string;data: BodyType<MeasurementUpdateInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateMeasurement>>,
+        TError,
+        {documentId: number;measurementId: string;data: BodyType<MeasurementUpdateInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateMeasurementMutationOptions(options));
     }
 
 export const getDeleteMeasurementUrl = (documentId: number,

@@ -178,6 +178,25 @@ paths:
                 $ref: "#/components/schemas/Measurement"
 
   /documents/{documentId}/measurements/{measurementId}:
+    put:
+      operationId: updateMeasurement
+      tags: [measurements]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+        - { name: measurementId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeasurementUpdateInput"
+      responses:
+        "200":
+          description: Updated measurement
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Measurement"
     delete:
       operationId: deleteMeasurement
       tags: [measurements]
@@ -372,6 +391,20 @@ components:
           type: object
           additionalProperties: true
       required: [id, pageNumber, type, label, realWorldValue, unit, points, fabricData]
+
+    MeasurementUpdateInput:
+      type: object
+      properties:
+        label:
+          type: string
+        realWorldValue:
+          type: number
+        unit:
+          type: string
+        fabricData:
+          type: object
+          additionalProperties: true
+      required: [label, realWorldValue, unit]
 
     Share:
       type: object
