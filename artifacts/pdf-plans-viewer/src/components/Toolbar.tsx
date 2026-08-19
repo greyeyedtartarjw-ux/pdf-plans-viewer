@@ -5,6 +5,13 @@ import { useViewerContext } from '../store/ViewerContext';
 import { Tool } from '../types';
 import { THEME } from '../lib/constants';
 import { createShare } from '@workspace/api-client-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 
 import {
   FolderOpen,
@@ -24,6 +31,9 @@ import {
   Settings2,
   Share2,
   Check,
+  Download,
+  FileText,
+  Braces,
 } from 'lucide-react';
 
 interface ToolbarProps {
@@ -31,6 +41,8 @@ interface ToolbarProps {
   onSnapshot: () => void;
   onPrint: () => void;
   onSetScale: () => void;
+  onExportCSV: () => void;
+  onExportJSON: () => void;
 }
 
 const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
@@ -43,7 +55,7 @@ const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
   { id: 'text', icon: Type, label: 'Text' },
 ];
 
-export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: ToolbarProps) {
+export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExportCSV, onExportJSON }: ToolbarProps) {
   const { state, dispatch } = useViewerContext();
   const { zoom, activeTool, currentPage, totalPages, highlightColor, documentId } = state;
 
@@ -231,6 +243,38 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale }: Toolba
           <button onClick={onPrint} className="p-2 text-sidebar-foreground hover:bg-white/10 rounded transition-colors" title="Print">
             <Printer size={18} />
           </button>
+
+          {/* Export dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="p-2 text-sidebar-foreground hover:bg-white/10 rounded transition-colors"
+                title="Export backup"
+              >
+                <Download size={18} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                Export backup
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={onExportCSV} className="gap-2 cursor-pointer">
+                <FileText size={15} className="shrink-0" />
+                <div>
+                  <div className="font-medium">Measurements CSV</div>
+                  <div className="text-xs text-muted-foreground">All pages, all measurements</div>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={onExportJSON} className="gap-2 cursor-pointer">
+                <Braces size={15} className="shrink-0" />
+                <div>
+                  <div className="font-medium">Full backup JSON</div>
+                  <div className="text-xs text-muted-foreground">Annotations + measurements + scale</div>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </div>

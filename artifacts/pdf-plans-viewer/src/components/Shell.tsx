@@ -6,6 +6,7 @@ import PDFPageViewer from './PDFPageViewer';
 import EmptyState from './EmptyState';
 import ScaleDialog from './ScaleDialog';
 import { loadPDF } from '../lib/pdfUtils';
+import { exportMeasurementsCSV, exportBackupJSON } from '../lib/exportUtils';
 import html2canvas from 'html2canvas';
 import {
   upsertDocument,
@@ -271,6 +272,14 @@ export default function Shell() {
 
   const handleSetScale = () => dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'set-scale' });
 
+  const handleExportCSV = () => {
+    exportMeasurementsCSV(state.measurements, state.documentData?.name);
+  };
+
+  const handleExportJSON = () => {
+    exportBackupJSON(state.annotations, state.measurements, state.scale, state.documentData?.name);
+  };
+
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
@@ -303,6 +312,8 @@ export default function Shell() {
         onSnapshot={handleSnapshot}
         onPrint={handlePrint}
         onSetScale={handleSetScale}
+        onExportCSV={handleExportCSV}
+        onExportJSON={handleExportJSON}
       />
 
       <div className="flex-1 flex overflow-hidden relative">
