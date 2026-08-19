@@ -2,10 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -22,8 +25,14 @@ import {
   deleteMeasurement,
   getDocumentScale,
   listMeasurements,
+  setDocumentScale,
 } from '@workspace/api-client-react';
 import { viewerHtml } from '@/constants/viewerHtml';
+import {
+  pointsForMobileOverlay,
+  toPdfArea,
+  toPdfDistance,
+} from '@/lib/pdfCoordinates';
 import type { LocalDocument } from '../index';
 
 // --- Types ---
@@ -32,7 +41,7 @@ interface Point {
   y: number;
 }
 
-type MeasureMode = 'none' | 'distance' | 'area';
+type MeasureMode = 'none' | 'distance' | 'area' | 'calibrate';
 
 interface WebViewMessage {
   type: string;
@@ -43,6 +52,8 @@ interface WebViewMessage {
   count?: number;
   width?: number;
   height?: number;
+  /** PDF page width in PDF natural units at scale=1 (stable across zoom / orientation). */
+  naturalPageW?: number;
   page?: number;
   pages?: number;
   totalPages?: number;
@@ -102,10 +113,20 @@ export default function ViewerScreen() {
   const [showPanel, setShowPanel] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // Calibration state
+  const [calibModal, setCalibModal] = useState(false);
+  const [calibPixelDist, setCalibPixelDist] = useState(0);
+  const [calibValue, setCalibValue] = useState('');
+  const [calibUnit, setCalibUnit] = useState<'m' | 'ft' | 'cm' | 'in' | 'mm'>('m');
+  const [calibSaving, setCalibSaving] = useState(false);
+
   // Keep mutable refs for use inside message handler (avoids stale closures)
   const modeRef = useRef<MeasureMode>('none');
   const pageRef = useRef(1);
   const canvasSizeRef = useRef({ width: 0, height: 0 });
+  // The PDF page width at PDF.js scale=1. Unlike the WebView canvas width,
+  // this is stable when the phone rotates or the viewer is resized.
+  const naturalPageWidthRef = useRef(0);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { pageRef.current = page; }, [page]);
@@ -177,19 +198,37 @@ export default function ViewerScreen() {
     },
   });
 
+  const scaleMutation = useMutation({
+    mutationFn: (input: Parameters<typeof setDocumentScale>[1]) =>
+      setDocumentScale(docId, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scale', docId] });
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    },
+  });
+
   // Push saved measurements to WebView whenever they change
   useEffect(() => {
     if (!webViewRef.current) return;
     const pageMeasurements = measurements
       .filter((m) => m.pageNumber === page)
-      .map((m) => ({
-        id: m.id,
-        type: m.type,
-        points: m.points as unknown as Point[],
-        label: m.label,
-      }));
+      .map((m) => {
+        return {
+          id: m.id,
+          type: m.type,
+          // Points are persisted in the source mobile canvas's coordinate
+          // system. Rescale the overlay to the active viewport without
+          // changing the stable PDF-unit value used for calculations.
+          points: pointsForMobileOverlay(
+            m.points as unknown as Point[],
+            m.fabricData as Record<string, unknown>,
+            canvasSize.width,
+          ),
+          label: m.label,
+        };
+      });
     sendMsg({ type: 'setSavedMeasurements', measurements: pageMeasurements });
-  }, [measurements, page]);
+  }, [measurements, page, canvasSize]);
 
   // --- WebView communication ---
   function sendMsg(data: object) {
@@ -226,6 +265,9 @@ export default function ViewerScreen() {
             setCanvasSize(size);
             canvasSizeRef.current = size;
           }
+          if (msg.naturalPageW) {
+            naturalPageWidthRef.current = msg.naturalPageW;
+          }
           break;
 
         case 'pointAdded':
@@ -239,12 +281,33 @@ export default function ViewerScreen() {
           break;
 
         case 'measurementComplete':
-          finalizeMeasurement(
-            msg.mode ?? modeRef.current,
-            msg.points ?? [],
-            msg.width ?? canvasSizeRef.current.width,
-            msg.height ?? canvasSizeRef.current.height,
-          );
+          if (modeRef.current === 'calibrate') {
+            // Don't save — open the calibration input modal instead
+            const pts = msg.points ?? [];
+            const viewportDistance = pts.length >= 2 ? totalDist(pts) : 0;
+            const viewportWidth = msg.width ?? canvasSizeRef.current.width;
+            const naturalWidth = msg.naturalPageW ?? naturalPageWidthRef.current;
+            // Store calibration in PDF page units, exactly as the web viewer
+            // does after dividing its Fabric coordinates by the zoom factor.
+            const pageDistance = toPdfDistance(viewportDistance, viewportWidth, naturalWidth);
+            setCalibPixelDist(pageDistance);
+            setCalibValue('');
+            setCalibModal(true);
+            // Reset WebView & mode state
+            setMode('none');
+            modeRef.current = 'none';
+            setCurrentPoints([]);
+            sendMsg({ type: 'setMode', mode: 'none' });
+            sendMsg({ type: 'clearCurrentPoints' });
+          } else {
+            finalizeMeasurement(
+              msg.mode ?? modeRef.current,
+              msg.points ?? [],
+              msg.width ?? canvasSizeRef.current.width,
+              msg.height ?? canvasSizeRef.current.height,
+              msg.naturalPageW ?? naturalPageWidthRef.current,
+            );
+          }
           break;
 
         case 'error':
@@ -262,22 +325,39 @@ export default function ViewerScreen() {
     points: Point[],
     cw: number,
     ch: number,
+    naturalPageWidth: number,
   ) {
     if (points.length < 2) return;
     setSaving(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
     const isArea = mMode === 'area';
-    const pixelValue = isArea ? shoelaceArea(points) : totalDist(points);
+    const viewportValue = isArea ? shoelaceArea(points) : totalDist(points);
+    // Measurements are taken on a canvas sized to the device width. Convert
+    // them to PDF page units before applying the document-wide scale so a
+    // rotation or a measurement in the web viewer produces the same value.
+    const pixelValue = isArea
+      ? toPdfArea(viewportValue, cw, naturalPageWidth)
+      : toPdfDistance(viewportValue, cw, naturalPageWidth);
 
-    // Scale calibrated on the web app uses web-canvas pixel coordinates which
-    // differ from mobile viewport-scaled pixels. To avoid silently saving wrong
-    // real-world values, mobile measurements always store pixel values until
-    // mobile-side calibration is implemented (see follow-up task).
-    const realWorldValue = pixelValue;
-    const unit = isArea ? 'px²' : 'px';
+    // Apply calibrated scale when available
+    const scaleIsSet = scale?.isSet && scale.pixelsPerUnit && scale.pixelsPerUnit > 0;
+    const linearPPU = scale?.pixelsPerUnit ?? 1;
+    // For area, scale factor is squared
+    const realWorldValue = scaleIsSet
+      ? isArea
+        ? pixelValue / (linearPPU * linearPPU)
+        : pixelValue / linearPPU
+      : pixelValue;
+    const unit = scaleIsSet
+      ? isArea
+        ? `${scale!.realWorldUnit}²`
+        : scale!.realWorldUnit
+      : isArea
+        ? 'px²'
+        : 'px';
 
-    const label = formatValue(realWorldValue, isArea ? 'px' : 'px', isArea);
+    const label = formatValue(realWorldValue, scaleIsSet ? scale!.realWorldUnit : 'px', isArea);
 
     try {
       await createMutation.mutateAsync({
@@ -308,13 +388,43 @@ export default function ViewerScreen() {
     }
   }
 
+  // --- Calibration save ---
+  async function saveScale() {
+    const num = parseFloat(calibValue);
+    if (!num || num <= 0 || calibPixelDist <= 0) {
+      Alert.alert('Invalid value', 'Please enter a positive real-world distance.');
+      return;
+    }
+    const pixelsPerUnit = calibPixelDist / num;
+    setCalibSaving(true);
+    try {
+      await scaleMutation.mutateAsync({
+        pixelsPerUnit,
+        unit: 'px',
+        realWorldUnit: calibUnit,
+        isSet: true,
+      } as Parameters<typeof setDocumentScale>[1]);
+      setCalibModal(false);
+      Alert.alert(
+        'Scale saved',
+        `1 ${calibUnit} = ${pixelsPerUnit.toFixed(2)} plan units. New measurements will now show real-world distances.`,
+      );
+    } catch {
+      Alert.alert('Save failed', 'Could not save the scale. Please try again.');
+    } finally {
+      setCalibSaving(false);
+    }
+  }
+
   // --- Tool actions ---
   function selectMode(next: MeasureMode) {
-    const newMode = mode === next ? 'none' : next;
+    // 'calibrate' is not a toggle — always activate it fresh
+    const newMode = next === 'calibrate' ? 'calibrate' : mode === next ? 'none' : next;
     setMode(newMode);
     modeRef.current = newMode;
     setCurrentPoints([]);
-    sendMsg({ type: 'setMode', mode: newMode });
+    // Calibrate reuses the WebView's distance-picking behaviour
+    sendMsg({ type: 'setMode', mode: newMode === 'calibrate' ? 'distance' : newMode });
     sendMsg({ type: 'clearCurrentPoints' });
     if (newMode !== 'none') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }
@@ -461,6 +571,8 @@ export default function ViewerScreen() {
         {mode !== 'none' && !saving && (
           <View style={styles.instruction}>
             <Text style={styles.instructionText}>
+              {mode === 'calibrate' && currentPoints.length === 0 && 'Tap the start of a known distance'}
+              {mode === 'calibrate' && currentPoints.length === 1 && 'Tap the end of the known distance'}
               {mode === 'distance' && currentPoints.length === 0 && 'Tap to place start point'}
               {mode === 'distance' && currentPoints.length === 1 && 'Tap to place end point'}
               {mode === 'area' && currentPoints.length === 0 && 'Tap to place first point'}
@@ -476,14 +588,32 @@ export default function ViewerScreen() {
         )}
       </View>
 
-      {/* Scale warning if no scale set */}
-      {scale && !scale.isSet && (
-        <View style={[styles.scaleBar, { backgroundColor: colors.primary }]}>
-          <Ionicons name="warning-outline" size={13} color={colors.primaryForeground} />
-          <Text style={[styles.scaleBarText, { color: colors.primaryForeground }]}>
-            No scale set — results shown in pixels. Set scale in the web app.
+      {/* Scale status bar */}
+      {scale && (
+        <TouchableOpacity
+          style={[
+            styles.scaleBar,
+            { backgroundColor: scale.isSet ? colors.card : colors.primary },
+          ]}
+          onPress={() => selectMode('calibrate')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name={scale.isSet ? 'checkmark-circle-outline' : 'warning-outline'}
+            size={13}
+            color={scale.isSet ? colors.primary : colors.primaryForeground}
+          />
+          <Text
+            style={[
+              styles.scaleBarText,
+              { color: scale.isSet ? colors.foreground : colors.primaryForeground, flex: 1 },
+            ]}
+          >
+            {scale.isSet
+              ? `Scale: 1 ${scale.realWorldUnit} = ${scale.pixelsPerUnit?.toFixed(2)} plan units  · Tap to recalibrate`
+              : 'No scale set — tap here to calibrate'}
           </Text>
-        </View>
+        </TouchableOpacity>
       )}
 
       {/* Toolbar */}
@@ -515,6 +645,20 @@ export default function ViewerScreen() {
           active={mode === 'area'}
           activeColor={colors.primary}
           onPress={() => selectMode('area')}
+          colors={colors}
+        />
+        <ToolButton
+          icon={
+            <MaterialCommunityIcons
+              name="target"
+              size={20}
+              color={mode === 'calibrate' ? colors.primaryForeground : colors.foreground}
+            />
+          }
+          label="Set Scale"
+          active={mode === 'calibrate'}
+          activeColor="#F59E0B"
+          onPress={() => selectMode('calibrate')}
           colors={colors}
         />
 
@@ -608,6 +752,80 @@ export default function ViewerScreen() {
           </ScrollView>
         </View>
       )}
+
+      {/* Calibration modal */}
+      <Modal
+        visible={calibModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCalibModal(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        >
+          <View style={[styles.modalSheet, { paddingBottom: Math.max(bottomPad, 24) }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Set Scale</Text>
+              <TouchableOpacity onPress={() => setCalibModal(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Ionicons name="close" size={22} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              You tapped{' '}
+              <Text style={{ fontFamily: 'Inter_600SemiBold', color: colors.foreground }}>
+                {calibPixelDist.toFixed(1)} plan units
+              </Text>
+              . Enter the real-world length that distance represents.
+            </Text>
+
+            {/* Real-world value input */}
+            <Text style={styles.inputLabel}>Distance</Text>
+            <TextInput
+              style={[styles.textInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
+              keyboardType="decimal-pad"
+              placeholder="e.g. 3.5"
+              placeholderTextColor={colors.mutedForeground}
+              value={calibValue}
+              onChangeText={setCalibValue}
+              autoFocus
+            />
+
+            {/* Unit picker */}
+            <Text style={styles.inputLabel}>Unit</Text>
+            <View style={styles.unitRow}>
+              {(['m', 'ft', 'cm', 'in', 'mm'] as const).map((u) => (
+                <TouchableOpacity
+                  key={u}
+                  style={[
+                    styles.unitBtn,
+                    { borderColor: colors.border, backgroundColor: colors.card },
+                    calibUnit === u && { backgroundColor: colors.primary, borderColor: colors.primary },
+                  ]}
+                  onPress={() => setCalibUnit(u)}
+                >
+                  <Text style={[styles.unitBtnText, { color: calibUnit === u ? colors.primaryForeground : colors.foreground }]}>
+                    {u}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={[styles.saveBtn, { backgroundColor: colors.primary, opacity: calibSaving ? 0.6 : 1 }]}
+              onPress={saveScale}
+              disabled={calibSaving}
+            >
+              {calibSaving ? (
+                <ActivityIndicator size="small" color={colors.primaryForeground} />
+              ) : (
+                <Text style={[styles.saveBtnText, { color: colors.primaryForeground }]}>Save Scale</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </View>
   );
 }
@@ -842,6 +1060,79 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
       fontSize: 14,
       color: colors.foreground,
       fontFamily: 'Inter_400Regular',
+    },
+    // Calibration modal
+    modalOverlay: {
+      flex: 1,
+      justifyContent: 'flex-end',
+      backgroundColor: 'rgba(0,0,0,0.45)',
+    },
+    modalSheet: {
+      backgroundColor: colors.background,
+      borderTopLeftRadius: 20,
+      borderTopRightRadius: 20,
+      paddingHorizontal: 20,
+      paddingTop: 20,
+      gap: 0,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: 10,
+    },
+    modalTitle: {
+      fontSize: 17,
+      fontFamily: 'Inter_600SemiBold',
+      color: colors.foreground,
+    },
+    modalSubtitle: {
+      fontSize: 13,
+      fontFamily: 'Inter_400Regular',
+      color: colors.mutedForeground,
+      lineHeight: 19,
+      marginBottom: 18,
+    },
+    inputLabel: {
+      fontSize: 12,
+      fontFamily: 'Inter_500Medium',
+      color: colors.mutedForeground,
+      marginBottom: 6,
+    },
+    textInput: {
+      borderWidth: 1,
+      borderRadius: colors.radius,
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+      fontSize: 16,
+      fontFamily: 'Inter_400Regular',
+      marginBottom: 16,
+    },
+    unitRow: {
+      flexDirection: 'row',
+      gap: 8,
+      marginBottom: 24,
+    },
+    unitBtn: {
+      flex: 1,
+      alignItems: 'center',
+      paddingVertical: 10,
+      borderRadius: colors.radius,
+      borderWidth: 1,
+    },
+    unitBtnText: {
+      fontSize: 13,
+      fontFamily: 'Inter_500Medium',
+    },
+    saveBtn: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 14,
+      borderRadius: colors.radius,
+    },
+    saveBtnText: {
+      fontSize: 15,
+      fontFamily: 'Inter_600SemiBold',
     },
   });
 }

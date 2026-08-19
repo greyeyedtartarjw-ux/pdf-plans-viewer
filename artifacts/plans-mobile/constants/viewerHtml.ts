@@ -54,7 +54,7 @@ export const viewerHtml = `<!DOCTYPE html>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    var pdfDoc=null, currentPage=1, mode='none', currentPoints=[], savedMeasurements=[], canvasW=0, canvasH=0, lastTap=0;
+    var pdfDoc=null, currentPage=1, mode='none', currentPoints=[], savedMeasurements=[], canvasW=0, canvasH=0, naturalPageW=0, lastTap=0;
     var pdfCanvas=document.getElementById('pdfCanvas'), overlayCanvas=document.getElementById('overlayCanvas');
     var pdfCtx=pdfCanvas.getContext('2d'), overlayCtx=overlayCanvas.getContext('2d');
     var loadingEl=document.getElementById('loading'), wrapperEl=document.getElementById('wrapper');
@@ -70,6 +70,7 @@ export const viewerHtml = `<!DOCTYPE html>
       showLoading('Rendering page '+n+'...');
       var page=await pdfDoc.getPage(n);
       var natural=page.getViewport({scale:1});
+      naturalPageW=natural.width;
       var scale=window.innerWidth/natural.width;
       var vp=page.getViewport({scale:scale});
       pdfCanvas.width=vp.width; pdfCanvas.height=vp.height;
@@ -79,7 +80,7 @@ export const viewerHtml = `<!DOCTYPE html>
       await page.render({canvasContext:pdfCtx,viewport:vp}).promise;
       hideLoading();
       drawOverlay();
-      postRN({type:'pageRendered',page:n,width:canvasW,height:canvasH,totalPages:pdfDoc.numPages});
+      postRN({type:'pageRendered',page:n,width:canvasW,height:canvasH,totalPages:pdfDoc.numPages,naturalPageW:naturalPageW});
     }
 
     function showLoading(msg) { loadingEl.querySelector('span').textContent=msg||'Loading...'; loadingEl.style.display='flex'; wrapperEl.style.display='none'; }
@@ -145,13 +146,13 @@ export const viewerHtml = `<!DOCTYPE html>
       var p=coords(cx,cy);
       if(mode==='area'&&currentPoints.length>=3) {
         var f=currentPoints[0], d=Math.sqrt(Math.pow(p.x-f.x,2)+Math.pow(p.y-f.y,2));
-        if(d<24){ postRN({type:'measurementComplete',mode:'area',points:currentPoints,width:canvasW,height:canvasH}); return; }
+        if(d<24){ postRN({type:'measurementComplete',mode:'area',points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW}); return; }
       }
       currentPoints.push(p); drawOverlay();
       if(mode==='distance'&&currentPoints.length===2) {
-        postRN({type:'measurementComplete',mode:'distance',points:currentPoints,width:canvasW,height:canvasH}); return;
+        postRN({type:'measurementComplete',mode:'distance',points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW}); return;
       }
-      postRN({type:'pointAdded',x:p.x,y:p.y,count:currentPoints.length,width:canvasW,height:canvasH});
+      postRN({type:'pointAdded',x:p.x,y:p.y,count:currentPoints.length,width:canvasW,height:canvasH,naturalPageW:naturalPageW});
     }
 
     overlayCanvas.addEventListener('touchend',function(e){
@@ -177,7 +178,7 @@ export const viewerHtml = `<!DOCTYPE html>
           currentPage=msg.page; currentPoints=[]; savedMeasurements=[];
           renderPage(currentPage); break;
         case 'finishArea':
-          if(currentPoints.length>=3) postRN({type:'measurementComplete',mode:'area',points:currentPoints,width:canvasW,height:canvasH});
+          if(currentPoints.length>=3) postRN({type:'measurementComplete',mode:'area',points:currentPoints,width:canvasW,height:canvasH,naturalPageW:naturalPageW});
           break;
       }
     }
