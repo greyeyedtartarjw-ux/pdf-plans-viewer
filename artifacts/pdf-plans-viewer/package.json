@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "vite build --config vite.config.ts",
+    "precheck:release-build": "PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1 pnpm exec playwright install firefox webkit",
     "check:release-build": "node scripts/check-release-build.mjs",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "pretypecheck": "pnpm --filter @workspace/api-client-react exec tsc --build",

@@ -2,3 +2,4 @@
 - [Offline mobile measurements](offline-mobile-measurements.md) — cache confirmed data and serialize retry-queue mutations so field work survives offline restarts and reconnects.
 - [Pending-sync semantics](pending-sync-semantics.md) — preserve ordered edits through ambiguous network failures; retries must be idempotent.
 - [Slow-network viewer checks](slow-network-viewer-checks.md) — test a rendered page through the successful open path, not the lazy viewer shell.
+- [Playwright WebKit on Nix](playwright-webkit-nix.md) — WebKit needs Nix runtime library paths; validate a real render, not its Ubuntu dependency probe.

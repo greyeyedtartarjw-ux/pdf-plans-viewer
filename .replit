@@ -41,4 +41,4 @@ timeoutMs = 90000
 
 [nix]
 channel = "stable-25_05"
-packages = ["chromium"]
+packages = ["chromium", "alsa-lib", "cairo", "dbus", "gdk-pixbuf", "glib", "gtk3", "pango", "xorg.libX11", "xorg.libXcomposite", "xorg.libXcursor", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXi", "xorg.libXrandr", "xorg.libxcb", "enchant", "flite", "graphene", "gst_all_1.gstreamer", "gst_all_1.gst-plugins-base", "gtk4", "harfbuzz", "hyphen", "icu74", "lcms2", "libavif", "libdrm", "libepoxy", "libevent", "libgbm", "libglvnd", "libjpeg", "libmanette", "libsecret", "libxkbcommon", "libxml2", "libxslt", "sqlite", "vulkan-loader", "x264", "gcc", "gst_all_1.gst-libav", "gst_all_1.gst-plugins-bad", "harfbuzzFull", "libjpeg_turbo", "opusfile", "gcc-unwrapped", "libbacktrace", "libjpeg8", "libjxl", "libsoup_3", "webkitgtk_6_0"]

@@ -1,10 +1,14 @@
 import { createServer } from 'node:http';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, access, constants } from 'node:fs/promises';
 import { basename, extname, resolve, sep } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { promisify } from 'node:util';
+import { firefox, webkit } from 'playwright';
+
+const execFileAsync = promisify(execFile);
 
 const INITIAL_FORBIDDEN_CHUNKS = [
   'PDFPageViewer-',
@@ -23,6 +27,8 @@ const OPTIONAL_CHUNKS = [
   'html2canvas.esm-',
 ];
 
+const SLOW_NETWORK_RESPONSE_DELAY_MS = 150;
+
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
@@ -32,6 +38,46 @@ const MIME_TYPES = {
 };
 
 const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+
+let nixRuntimeLibraryPath;
+
+async function getNixRuntimeLibraryPath() {
+  if (!nixRuntimeLibraryPath) {
+    nixRuntimeLibraryPath = (async () => {
+      try {
+        const packageResults = await Promise.all(
+          ['webkitgtk_6_0', 'libglvnd', 'gst_all_1.gst-libav'].map(async (packageName) => {
+            const { stdout } = await execFileAsync(
+              'rippkgs',
+              ['--exact', '--json', packageName],
+              { timeout: 15_000 },
+            );
+            return JSON.parse(stdout);
+          }),
+        );
+        const storePaths = packageResults.flatMap((result) => result.flatMap(
+          (entry) => Object.values(entry.store_paths ?? {}),
+        ));
+        const directories = await Promise.all(storePaths.flatMap((storePath) => [
+          resolve('/nix/store', storePath, 'lib'),
+          resolve('/nix/store', storePath, 'lib/gstreamer-1.0'),
+        ]).map(async (libraryDirectory) => {
+          try {
+            await access(libraryDirectory, constants.R_OK);
+            return libraryDirectory;
+          } catch {
+            return null;
+          }
+        }));
+        return directories.filter(Boolean).join(':');
+      } catch {
+        return '';
+      }
+    })();
+  }
+
+  return nixRuntimeLibraryPath;
+}
 
 function sendJson(response, payload) {
   response.writeHead(200, {
@@ -83,6 +129,11 @@ async function createStaticServer(root) {
   const resolvedRoot = resolve(root);
   const server = createServer(async (request, response) => {
     const requestPath = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+
+    // Firefox and WebKit do not expose Chromium's network-emulation protocol.
+    // Add latency at the fixture server so every engine verifies the same
+    // deferred-loading behavior under a constrained connection.
+    await delay(SLOW_NETWORK_RESPONSE_DELAY_MS);
 
     // The release check must use the normal successful open path. These
     // responses keep the test isolated from the development database while
@@ -323,9 +374,30 @@ async function chooseFixturePdf(client, fixturePath) {
   });
 }
 
-export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
-  const staticServer = await createStaticServer(resolve(viewerRoot, 'dist/public'));
-  const fixturePath = resolve(tmpdir(), `plans-viewer-release-check-${randomUUID()}.pdf`);
+function assertViewerRequests(requests, selectionStartedAt, browserName) {
+  const afterFileSelection = requests.filter((request) => request.timestamp >= selectionStartedAt);
+  const requestedPaths = afterFileSelection.map((request) => request.pathname);
+
+  for (const expectedChunk of ['pdfUtils-', 'PDFPageViewer-']) {
+    if (!requestedPaths.some((pathname) => basename(pathname).startsWith(expectedChunk))) {
+      throw new Error(`${browserName}: choosing a PDF did not request the expected ${expectedChunk} chunk.`);
+    }
+  }
+
+  assertNoRequests(
+    afterFileSelection,
+    OPTIONAL_CHUNKS,
+    `${browserName}: opening a PDF`,
+  );
+}
+
+function logPassedBrowserCheck(browserName, viewerShownInMs) {
+  console.log(
+    `Slow-network browser check passed in ${browserName}: the initial route avoided ${INITIAL_FORBIDDEN_CHUNKS.length} deferred assets and the viewer appeared in ${viewerShownInMs}ms.`,
+  );
+}
+
+async function runChromiumSlowNetworkBrowserCheck({ staticServer, fixturePath }) {
   const { browser, webSocketDebuggerUrl } = await launchChromium();
   const client = await DevToolsClient.connect(webSocketDebuggerUrl);
   const requests = [];
@@ -338,7 +410,6 @@ export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
   });
 
   try {
-    await writeFile(fixturePath, createFixturePdf());
     await client.send('Network.enable');
     await client.send('Network.emulateNetworkConditions', {
       offline: false,
@@ -362,7 +433,7 @@ export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
     assertNoRequests(
       beforeFileSelection,
       INITIAL_FORBIDDEN_CHUNKS,
-      'The initial route',
+      'Chromium: the initial route',
     );
 
     const selectionStartedAt = Date.now();
@@ -383,31 +454,123 @@ export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
     const viewerShownInMs = Date.now() - selectionStartedAt;
 
     if (viewerShownInMs > 6_000) {
-      throw new Error(`The plan viewer took ${viewerShownInMs}ms to appear on the throttled connection.`);
+      throw new Error(`Chromium: the plan viewer took ${viewerShownInMs}ms to appear on the throttled connection.`);
     }
 
     await delay(750);
-    const afterFileSelection = requests.filter((request) => request.timestamp >= selectionStartedAt);
-    const requestedPaths = afterFileSelection.map((request) => request.pathname);
-
-    for (const expectedChunk of ['pdfUtils-', 'PDFPageViewer-']) {
-      if (!requestedPaths.some((pathname) => basename(pathname).startsWith(expectedChunk))) {
-        throw new Error(`Choosing a PDF did not request the expected ${expectedChunk} chunk.`);
-      }
-    }
-
-    assertNoRequests(
-      afterFileSelection,
-      OPTIONAL_CHUNKS,
-      'Opening a PDF',
-    );
-
-    console.log(
-      `Slow-network browser check passed: the initial route avoided ${INITIAL_FORBIDDEN_CHUNKS.length} deferred assets and the viewer appeared in ${viewerShownInMs}ms.`,
-    );
+    assertViewerRequests(requests, selectionStartedAt, 'Chromium');
+    logPassedBrowserCheck('Chromium', viewerShownInMs);
   } finally {
     client.close();
     browser.kill('SIGKILL');
+  }
+}
+
+async function runPlaywrightSlowNetworkBrowserCheck({
+  browserType,
+  browserName,
+  staticServer,
+  fixturePath,
+}) {
+  const nixLibraryPath = browserName === 'WebKit'
+    ? await getNixRuntimeLibraryPath()
+    : '';
+  const priorSkipValidation = process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS;
+
+  if (browserName === 'WebKit') {
+    process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = '1';
+  }
+
+  let browser;
+  try {
+    browser = await browserType.launch({
+      headless: true,
+      ...(nixLibraryPath
+        ? {
+          env: {
+            ...process.env,
+            LD_LIBRARY_PATH: [process.env.LD_LIBRARY_PATH, nixLibraryPath].filter(Boolean).join(':'),
+          },
+        }
+        : {}),
+    });
+  } finally {
+    if (priorSkipValidation === undefined) {
+      delete process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS;
+    } else {
+      process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = priorSkipValidation;
+    }
+  }
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const requests = [];
+
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin === staticServer.origin) {
+      requests.push({ pathname: url.pathname, timestamp: Date.now() });
+    }
+  });
+
+  try {
+    await page.goto(staticServer.origin, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('button', { name: /open/i }).first().waitFor();
+    await page.waitForTimeout(750);
+    const beforeFileSelection = [...requests];
+    assertNoRequests(
+      beforeFileSelection,
+      INITIAL_FORBIDDEN_CHUNKS,
+      `${browserName}: the initial route`,
+    );
+
+    const selectionStartedAt = Date.now();
+    await page.locator('input[type="file"]').first().setInputFiles(fixturePath);
+    await page.waitForFunction(
+      () => {
+        const viewer = document.querySelector('#pdf-viewer-area');
+        const renderedPage = viewer?.querySelector('[data-page-rendered="true"]');
+        const pdfCanvas = renderedPage?.querySelector('canvas');
+        const stillRendering = [...(viewer?.querySelectorAll('span') ?? [])]
+          .some((element) => element.textContent?.includes('Rendering page'));
+        return Boolean(pdfCanvas && pdfCanvas.width > 0 && pdfCanvas.height > 0 && !stillRendering);
+      },
+      undefined,
+      { timeout: 6_000 },
+    );
+    const viewerShownInMs = Date.now() - selectionStartedAt;
+
+    if (viewerShownInMs > 6_000) {
+      throw new Error(`${browserName}: the plan viewer took ${viewerShownInMs}ms to appear on the throttled connection.`);
+    }
+
+    await page.waitForTimeout(750);
+    assertViewerRequests(requests, selectionStartedAt, browserName);
+    logPassedBrowserCheck(browserName, viewerShownInMs);
+  } finally {
+    await browser.close();
+  }
+}
+
+export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
+  const staticServer = await createStaticServer(resolve(viewerRoot, 'dist/public'));
+  const fixturePath = resolve(tmpdir(), `plans-viewer-release-check-${randomUUID()}.pdf`);
+
+  try {
+    await writeFile(fixturePath, createFixturePdf());
+    await runChromiumSlowNetworkBrowserCheck({ staticServer, fixturePath });
+    await runPlaywrightSlowNetworkBrowserCheck({
+      browserType: firefox,
+      browserName: 'Firefox',
+      staticServer,
+      fixturePath,
+    });
+    await runPlaywrightSlowNetworkBrowserCheck({
+      browserType: webkit,
+      browserName: 'WebKit',
+      staticServer,
+      fixturePath,
+    });
+  } finally {
     staticServer.close();
   }
 }
