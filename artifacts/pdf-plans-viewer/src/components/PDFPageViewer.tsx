@@ -48,6 +48,7 @@ export default function PDFPageViewer() {
 
   const [fCanvas, setFCanvas] = useState<fabric.Canvas | null>(null);
   const [isRenderLoading, setIsRenderLoading] = useState(false);
+  const [hasRenderedPage, setHasRenderedPage] = useState(false);
   const [areaHint, setAreaHint] = useState<string | null>(null);
   const areaHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
@@ -389,9 +390,13 @@ export default function PDFPageViewer() {
     let mounted = true;
 
     const renderPage = async () => {
-      if (!pdfDoc || !pdfCanvasRef.current) return;
+      if (!pdfDoc || !pdfCanvasRef.current) {
+        setHasRenderedPage(false);
+        return;
+      }
 
       setIsRenderLoading(true);
+      setHasRenderedPage(false);
       try {
         const result = await renderPageToCanvas(pdfDoc, currentPage, pdfCanvasRef.current, zoom);
         if (mounted && result) {
@@ -399,6 +404,12 @@ export default function PDFPageViewer() {
             containerRef.current.style.width = `${result.viewport.width}px`;
             containerRef.current.style.height = `${result.viewport.height}px`;
           }
+          // The PDF canvas is ready at this point. Yield one frame before
+          // initializing the annotation overlay so the rendered plan can paint
+          // immediately instead of waiting for Fabric setup.
+          setHasRenderedPage(true);
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          if (!mounted) return;
           if (fCanvas) fCanvas.dispose();
           if (fabricCanvasRef.current) {
             fabricCanvasRef.current.width = result.viewport.width;
@@ -409,6 +420,7 @@ export default function PDFPageViewer() {
         }
       } catch (err) {
         console.error('Render failed', err);
+        if (mounted) setHasRenderedPage(false);
       } finally {
         if (mounted) setIsRenderLoading(false);
       }
@@ -1034,7 +1046,11 @@ export default function PDFPageViewer() {
   }, [fCanvas, cancelAreaDrawing]);
 
   return (
-    <div className="relative shadow-xl bg-white border border-border/50 select-none m-auto transition-transform origin-top-left" ref={containerRef}>
+    <div
+      className="relative shadow-xl bg-white border border-border/50 select-none m-auto transition-transform origin-top-left"
+      data-page-rendered={hasRenderedPage ? 'true' : 'false'}
+      ref={containerRef}
+    >
       <canvas ref={pdfCanvasRef} className="absolute top-0 left-0 pointer-events-none" />
       <canvas ref={fabricCanvasRef} className="absolute top-0 left-0" />
       {isRenderLoading && (

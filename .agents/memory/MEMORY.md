@@ -1,3 +1,4 @@
 - [PDF Plans Viewer stack](pdf-plans-viewer.md) — pdfjs-dist 3.11.174 + Fabric 7 + API server; worker served from public/
 - [Offline mobile measurements](offline-mobile-measurements.md) — cache confirmed data and serialize retry-queue mutations so field work survives offline restarts and reconnects.
 - [Pending-sync semantics](pending-sync-semantics.md) — preserve ordered edits through ambiguous network failures; retries must be idempotent.
+- [Slow-network viewer checks](slow-network-viewer-checks.md) — test a rendered page through the successful open path, not the lazy viewer shell.

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { runSlowNetworkBrowserCheck } from './check-slow-network-browser.mjs';
 
 const viewerRoot = resolve(import.meta.dirname, '..');
 const buildEnv = { ...process.env };
@@ -47,3 +48,5 @@ if (!localAssetUrls.some((url) => url.startsWith('/assets/'))) {
 console.log(
   `Release build check passed: ${localAssetUrls.length} local asset URL(s) use root paths.`,
 );
+
+await runSlowNetworkBrowserCheck({ viewerRoot });
