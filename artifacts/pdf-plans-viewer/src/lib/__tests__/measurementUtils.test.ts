@@ -119,7 +119,10 @@ describe('recalculatePixelMeasurement', () => {
     set: true,
     pixelsPerUnit: 10,
     unit: 'px',
-    realWorldUnit: 'm',
+    realWorldUnit: 'ft',
+    scaleKind: 'preset' as const,
+    presetRatio: '1/4' as const,
+    calibrationDistanceFeet: null,
   };
 
   it('converts an existing pixel distance to the new real-world scale', () => {
@@ -133,9 +136,9 @@ describe('recalculatePixelMeasurement', () => {
       points: [],
       data: {},
     }, scale)).toEqual({
-      label: '3.00 m',
+      label: '3.00 ft',
       realWorldValue: 3,
-      unit: 'm',
+      unit: 'ft',
     });
   });
 
@@ -150,9 +153,9 @@ describe('recalculatePixelMeasurement', () => {
       points: [],
       data: {},
     }, scale)).toEqual({
-      label: '9.00 m²',
+      label: '9.00 ft²',
       realWorldValue: 9,
-      unit: 'm²',
+      unit: 'ft²',
     });
   });
 

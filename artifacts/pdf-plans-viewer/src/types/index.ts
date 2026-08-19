@@ -13,9 +13,32 @@ export type SidebarTab = 'pages' | 'search' | 'measurements';
 export interface Scale {
   set: boolean;
   pixelsPerUnit: number;
-  unit: string; // e.g., 'px'
-  realWorldUnit: string; // e.g., 'm', 'cm', 'ft'
+  unit: 'px';
+  realWorldUnit: 'ft';
+  scaleKind: 'preset' | 'custom';
+  presetRatio: '1/8' | '1/4' | '3/6' | '3/4' | '1' | null;
+  calibrationDistanceFeet: number | null;
 }
+
+export const SCALE_PRESETS = [
+  { ratio: '1/8', pixelsPerFoot: 9 },
+  { ratio: '1/4', pixelsPerFoot: 18 },
+  { ratio: '3/6', pixelsPerFoot: 36 },
+  { ratio: '3/4', pixelsPerFoot: 54 },
+  { ratio: '1', pixelsPerFoot: 72 },
+] as const;
+
+export type ScalePresetRatio = typeof SCALE_PRESETS[number]['ratio'];
+
+export const DEFAULT_SCALE: Scale = {
+  set: false,
+  pixelsPerUnit: 1,
+  unit: 'px',
+  realWorldUnit: 'ft',
+  scaleKind: 'custom',
+  presetRatio: null,
+  calibrationDistanceFeet: null,
+};
 
 export interface Annotation {
   id: string;

@@ -287,17 +287,17 @@ export const useUpsertDocument = <TError = ErrorType<unknown>,
       return useMutation(getUpsertDocumentMutationOptions(options));
     }
 
-export const getGetDocumentScaleUrl = (documentId: number,) => {
+export const getListDocumentScalesUrl = (documentId: number,) => {
 
 
 
 
-  return `/api/documents/${documentId}/scale`
+  return `/api/documents/${documentId}/scales`
 }
 
-export const getDocumentScale = async (documentId: number, options?: Parameters<typeof customFetch>[1]): Promise<ScaleConfig> => {
+export const listDocumentScales = async (documentId: number, options?: Parameters<typeof customFetch>[1]): Promise<ScaleConfig[]> => {
 
-  return customFetch<ScaleConfig>(getGetDocumentScaleUrl(documentId),
+  return customFetch<ScaleConfig[]>(getListDocumentScalesUrl(documentId),
   {
     ...options,
     method: 'GET'
@@ -310,42 +310,42 @@ export const getDocumentScale = async (documentId: number, options?: Parameters<
 
 
 
-export const getGetDocumentScaleQueryKey = (documentId: number,) => {
+export const getListDocumentScalesQueryKey = (documentId: number,) => {
     return [
-    `/api/documents/${documentId}/scale`
+    `/api/documents/${documentId}/scales`
     ] as const;
     }
 
 
-export const getGetDocumentScaleQueryOptions = <TData = Awaited<ReturnType<typeof getDocumentScale>>, TError = ErrorType<void>>(documentId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDocumentScale>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export const getListDocumentScalesQueryOptions = <TData = Awaited<ReturnType<typeof listDocumentScales>>, TError = ErrorType<unknown>>(documentId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listDocumentScales>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetDocumentScaleQueryKey(documentId);
+  const queryKey =  queryOptions?.queryKey ?? getListDocumentScalesQueryKey(documentId);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getDocumentScale>>> = ({ signal }) => getDocumentScale(documentId, { signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listDocumentScales>>> = ({ signal }) => listDocumentScales(documentId, { signal, ...requestOptions });
 
 
 
 
 
-   return  { queryKey, queryFn, enabled: documentId !== null && documentId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getDocumentScale>>, TError, TData> & { queryKey: QueryKey }
+   return  { queryKey, queryFn, enabled: documentId !== null && documentId !== undefined, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listDocumentScales>>, TError, TData> & { queryKey: QueryKey }
 }
 
-export type GetDocumentScaleQueryResult = NonNullable<Awaited<ReturnType<typeof getDocumentScale>>>
-export type GetDocumentScaleQueryError = ErrorType<void>
+export type ListDocumentScalesQueryResult = NonNullable<Awaited<ReturnType<typeof listDocumentScales>>>
+export type ListDocumentScalesQueryError = ErrorType<unknown>
 
 
 
-export function useGetDocumentScale<TData = Awaited<ReturnType<typeof getDocumentScale>>, TError = ErrorType<void>>(
- documentId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getDocumentScale>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export function useListDocumentScales<TData = Awaited<ReturnType<typeof listDocumentScales>>, TError = ErrorType<unknown>>(
+ documentId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listDocumentScales>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
-  const queryOptions = getGetDocumentScaleQueryOptions(documentId,options)
+  const queryOptions = getListDocumentScalesQueryOptions(documentId,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 
@@ -358,18 +358,20 @@ export function useGetDocumentScale<TData = Awaited<ReturnType<typeof getDocumen
 
 
 
-export const getSetDocumentScaleUrl = (documentId: number,) => {
+export const getSetDocumentPageScaleUrl = (documentId: number,
+    pageNumber: number,) => {
 
 
 
 
-  return `/api/documents/${documentId}/scale`
+  return `/api/documents/${documentId}/scales/${pageNumber}`
 }
 
-export const setDocumentScale = async (documentId: number,
+export const setDocumentPageScale = async (documentId: number,
+    pageNumber: number,
     scaleInput: ScaleInput, options?: Parameters<typeof customFetch>[1]): Promise<ScaleConfig> => {
 
-  return customFetch<ScaleConfig>(getSetDocumentScaleUrl(documentId),
+  return customFetch<ScaleConfig>(getSetDocumentPageScaleUrl(documentId,pageNumber),
   {
     ...options,
     method: 'PUT',
@@ -382,11 +384,11 @@ export const setDocumentScale = async (documentId: number,
 
 
 
-export const getSetDocumentScaleMutationOptions = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setDocumentScale>>, TError,{documentId: number;data: BodyType<ScaleInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
-): UseMutationOptions<Awaited<ReturnType<typeof setDocumentScale>>, TError,{documentId: number;data: BodyType<ScaleInput>}, TContext> => {
+export const getSetDocumentPageScaleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setDocumentPageScale>>, TError,{documentId: number;pageNumber: number;data: BodyType<ScaleInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof setDocumentPageScale>>, TError,{documentId: number;pageNumber: number;data: BodyType<ScaleInput>}, TContext> => {
 
-const mutationKey = ['setDocumentScale'];
+const mutationKey = ['setDocumentPageScale'];
 const {mutation: mutationOptions, request: requestOptions} = options ?
       options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
       options
@@ -396,10 +398,10 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
 
 
-      const mutationFn: MutationFunction<Awaited<ReturnType<typeof setDocumentScale>>, {documentId: number;data: BodyType<ScaleInput>}> = (props) => {
-          const {documentId,data} = props ?? {};
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof setDocumentPageScale>>, {documentId: number;pageNumber: number;data: BodyType<ScaleInput>}> = (props) => {
+          const {documentId,pageNumber,data} = props ?? {};
 
-          return  setDocumentScale(documentId,data,requestOptions)
+          return  setDocumentPageScale(documentId,pageNumber,data,requestOptions)
         }
 
 
@@ -409,19 +411,19 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
 
   return  { mutationFn, ...mutationOptions }}
 
-    export type SetDocumentScaleMutationResult = NonNullable<Awaited<ReturnType<typeof setDocumentScale>>>
-    export type SetDocumentScaleMutationBody = BodyType<ScaleInput>
-    export type SetDocumentScaleMutationError = ErrorType<unknown>
+    export type SetDocumentPageScaleMutationResult = NonNullable<Awaited<ReturnType<typeof setDocumentPageScale>>>
+    export type SetDocumentPageScaleMutationBody = BodyType<ScaleInput>
+    export type SetDocumentPageScaleMutationError = ErrorType<unknown>
 
-    export const useSetDocumentScale = <TError = ErrorType<unknown>,
-    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setDocumentScale>>, TError,{documentId: number;data: BodyType<ScaleInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+    export const useSetDocumentPageScale = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof setDocumentPageScale>>, TError,{documentId: number;pageNumber: number;data: BodyType<ScaleInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
  ): UseMutationResult<
-        Awaited<ReturnType<typeof setDocumentScale>>,
+        Awaited<ReturnType<typeof setDocumentPageScale>>,
         TError,
-        {documentId: number;data: BodyType<ScaleInput>},
+        {documentId: number;pageNumber: number;data: BodyType<ScaleInput>},
         TContext
       > => {
-      return useMutation(getSetDocumentScaleMutationOptions(options));
+      return useMutation(getSetDocumentPageScaleMutationOptions(options));
     }
 
 export const getListAnnotationsUrl = (documentId: number,) => {

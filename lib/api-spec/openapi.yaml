@@ -64,26 +64,29 @@ paths:
               schema:
                 $ref: "#/components/schemas/Document"
 
-  /documents/{documentId}/scale:
+  /documents/{documentId}/scales:
     get:
-      operationId: getDocumentScale
+      operationId: listDocumentScales
       tags: [documents]
       parameters:
         - { name: documentId, in: path, required: true, schema: { type: number } }
       responses:
         "200":
-          description: Scale config
+          description: Page scale configurations
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ScaleConfig"
-        "404":
-          description: Not found
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScaleConfig"
+
+  /documents/{documentId}/scales/{pageNumber}:
     put:
-      operationId: setDocumentScale
+      operationId: setDocumentPageScale
       tags: [documents]
       parameters:
         - { name: documentId, in: path, required: true, schema: { type: number } }
+        - { name: pageNumber, in: path, required: true, schema: { type: number } }
       requestBody:
         required: true
         content:
@@ -279,6 +282,8 @@ components:
       properties:
         documentId:
           type: number
+        pageNumber:
+          type: number
         isSet:
           type: boolean
         pixelsPerUnit:
@@ -287,7 +292,15 @@ components:
           type: string
         realWorldUnit:
           type: string
-      required: [documentId, isSet, pixelsPerUnit, unit, realWorldUnit]
+        scaleKind:
+          type: string
+          enum: [preset, custom]
+        presetRatio:
+          type: ["string", "null"]
+          enum: ["1/8", "1/4", "3/6", "3/4", "1", null]
+        calibrationDistanceFeet:
+          type: ["number", "null"]
+      required: [documentId, pageNumber, isSet, pixelsPerUnit, unit, realWorldUnit, scaleKind, presetRatio, calibrationDistanceFeet]
 
     ScaleInput:
       type: object
@@ -300,7 +313,15 @@ components:
           type: string
         realWorldUnit:
           type: string
-      required: [isSet, pixelsPerUnit, unit, realWorldUnit]
+        scaleKind:
+          type: string
+          enum: [preset, custom]
+        presetRatio:
+          type: ["string", "null"]
+          enum: ["1/8", "1/4", "3/6", "3/4", "1", null]
+        calibrationDistanceFeet:
+          type: ["number", "null"]
+      required: [isSet, pixelsPerUnit, unit, realWorldUnit, scaleKind, presetRatio, calibrationDistanceFeet]
 
     Annotation:
       type: object
@@ -433,8 +454,10 @@ components:
       properties:
         document:
           $ref: "#/components/schemas/Document"
-        scale:
-          $ref: "#/components/schemas/ScaleConfig"
+        scales:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScaleConfig"
         annotations:
           type: array
           items:
@@ -445,4 +468,4 @@ components:
             $ref: "#/components/schemas/Measurement"
         share:
           $ref: "#/components/schemas/Share"
-      required: [document, scale, annotations, measurements, share]
+      required: [document, scales, annotations, measurements, share]

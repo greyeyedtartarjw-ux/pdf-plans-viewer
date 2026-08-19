@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import { randomUUID } from "crypto";
 import app from "../../app.js";
-import { db, documentsTable, measurementsTable } from "@workspace/db";
+import { db, documentsTable, documentScalesTable, measurementsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
@@ -143,5 +143,134 @@ describe("PUT /api/documents/:documentId/measurements/:measurementId", () => {
       pageNumber: 1,
       type: "distance",
     });
+  });
+});
+
+describe("document page scales", () => {
+  let documentId: number;
+
+  beforeEach(async () => {
+    documentId = await createDocument();
+  });
+
+  afterEach(async () => {
+    await db.delete(documentsTable).where(eq(documentsTable.id, documentId));
+  });
+
+  const presetScale = {
+    isSet: true,
+    pixelsPerUnit: 18,
+    unit: "px",
+    realWorldUnit: "ft",
+    scaleKind: "preset",
+    presetRatio: "1/4",
+    calibrationDistanceFeet: null,
+  };
+
+  it("stores isolated preset and custom scales by page and includes them in a share", async () => {
+    await request(app)
+      .put(`/api/documents/${documentId}/scales/1`)
+      .send(presetScale)
+      .expect(200);
+
+    const custom = await request(app)
+      .put(`/api/documents/${documentId}/scales/2`)
+      .send({
+        isSet: true,
+        pixelsPerUnit: 24,
+        unit: "px",
+        realWorldUnit: "ft",
+        scaleKind: "custom",
+        presetRatio: null,
+        calibrationDistanceFeet: 10,
+      })
+      .expect(200);
+    expect(custom.body).toMatchObject({
+      documentId,
+      pageNumber: 2,
+      scaleKind: "custom",
+      calibrationDistanceFeet: 10,
+    });
+
+    const listed = await request(app)
+      .get(`/api/documents/${documentId}/scales`)
+      .expect(200);
+    expect(listed.body).toMatchObject([
+      { pageNumber: 1, pixelsPerUnit: 18, presetRatio: "1/4" },
+      { pageNumber: 2, pixelsPerUnit: 24, scaleKind: "custom" },
+    ]);
+
+    const share = await request(app)
+      .post("/api/shares")
+      .send({ documentId })
+      .expect(201);
+    const payload = await request(app)
+      .get(`/api/shares/${share.body.token}`)
+      .expect(200);
+    expect(payload.body.scales).toMatchObject([
+      { pageNumber: 1, presetRatio: "1/4" },
+      { pageNumber: 2, calibrationDistanceFeet: 10 },
+    ]);
+  });
+
+  it("rejects invalid page numbers and non-feet scale inputs", async () => {
+    await request(app)
+      .put(`/api/documents/${documentId}/scales/0`)
+      .send(presetScale)
+      .expect(400);
+
+    await request(app)
+      .put(`/api/documents/${documentId}/scales/1`)
+      .send({ ...presetScale, realWorldUnit: "m" })
+      .expect(400);
+  });
+
+  it("enforces every canonical preset mapping and rejects conflicting metadata", async () => {
+    const presets = [
+      ["1/8", 9],
+      ["1/4", 18],
+      ["3/6", 36],
+      ["3/4", 54],
+      ["1", 72],
+    ] as const;
+    for (const [presetRatio, pixelsPerUnit] of presets) {
+      await request(app)
+        .put(`/api/documents/${documentId}/scales/${pixelsPerUnit}`)
+        .send({ ...presetScale, presetRatio, pixelsPerUnit })
+        .expect(200);
+    }
+    await request(app)
+      .put(`/api/documents/${documentId}/scales/99`)
+      .send({ ...presetScale, presetRatio: "1/8", pixelsPerUnit: 18 })
+      .expect(400);
+    await request(app)
+      .put(`/api/documents/${documentId}/scales/100`)
+      .send({ ...presetScale, calibrationDistanceFeet: 1 })
+      .expect(400);
+  });
+
+  it("serves a legacy document-wide calibration as an equivalent page-one feet scale", async () => {
+    await db.insert(documentScalesTable).values({
+      documentId,
+      pageNumber: 1,
+      isSet: true,
+      pixelsPerUnit: 10,
+      unit: "px",
+      realWorldUnit: "in",
+      scaleKind: "custom",
+      presetRatio: null,
+      calibrationDistanceFeet: null,
+    });
+
+    const listed = await request(app)
+      .get(`/api/documents/${documentId}/scales`)
+      .expect(200);
+    expect(listed.body).toMatchObject([{
+      pageNumber: 1,
+      pixelsPerUnit: 120,
+      realWorldUnit: "ft",
+      scaleKind: "custom",
+      calibrationDistanceFeet: 1,
+    }]);
   });
 });

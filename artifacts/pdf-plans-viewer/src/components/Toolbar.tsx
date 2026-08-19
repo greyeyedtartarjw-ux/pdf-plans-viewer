@@ -59,6 +59,7 @@ const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
 export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExportCSV, onExportJSON }: ToolbarProps) {
   const { state, dispatch } = useViewerContext();
   const { zoom, activeTool, currentPage, totalPages, highlightColor, documentId, saveStatus } = state;
+  const currentScale = state.scales[currentPage];
 
   const [shareState, setShareState] = useState<'idle' | 'copying' | 'copied'>('idle');
 
@@ -121,7 +122,16 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExport
           return (
             <button
               key={t.id}
-              onClick={() => dispatch({ type: 'SET_ACTIVE_TOOL', tool: t.id })}
+              onClick={() => {
+                if (
+                  (t.id === 'measure-distance' || t.id === 'measure-area')
+                  && !currentScale?.set
+                ) {
+                  alert(`Set a scale for page ${currentPage} before measuring.`);
+                  return;
+                }
+                dispatch({ type: 'SET_ACTIVE_TOOL', tool: t.id });
+              }}
               className={`p-2 rounded transition-colors relative group ${
                 isActive
                   ? 'bg-primary text-primary-foreground shadow-sm'

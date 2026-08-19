@@ -5,10 +5,17 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ScaleInputPresetRatio } from './scaleInputPresetRatio';
+import type { ScaleInputScaleKind } from './scaleInputScaleKind';
 
 export interface ScaleInput {
   isSet: boolean;
   pixelsPerUnit: number;
   unit: string;
   realWorldUnit: string;
+  scaleKind: ScaleInputScaleKind;
+  /** @nullable */
+  presetRatio: ScaleInputPresetRatio;
+  /** @nullable */
+  calibrationDistanceFeet: number | null;
 }

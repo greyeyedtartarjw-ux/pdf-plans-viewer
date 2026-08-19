@@ -21,19 +21,74 @@ export interface DocumentInput {
   hash: string;
 }
 
+export type ScaleConfigScaleKind = typeof ScaleConfigScaleKind[keyof typeof ScaleConfigScaleKind];
+
+
+export const ScaleConfigScaleKind = {
+  preset: 'preset',
+  custom: 'custom',
+} as const;
+
+/**
+ * @nullable
+ */
+export type ScaleConfigPresetRatio = typeof ScaleConfigPresetRatio[keyof typeof ScaleConfigPresetRatio] | null;
+
+
+export const ScaleConfigPresetRatio = {
+  '1/8': '1/8',
+  '1/4': '1/4',
+  '3/6': '3/6',
+  '3/4': '3/4',
+  NUMBER_1: '1',
+} as const;
+
 export interface ScaleConfig {
   documentId: number;
+  pageNumber: number;
   isSet: boolean;
   pixelsPerUnit: number;
   unit: string;
   realWorldUnit: string;
+  scaleKind: ScaleConfigScaleKind;
+  /** @nullable */
+  presetRatio: ScaleConfigPresetRatio;
+  /** @nullable */
+  calibrationDistanceFeet: number | null;
 }
+
+export type ScaleInputScaleKind = typeof ScaleInputScaleKind[keyof typeof ScaleInputScaleKind];
+
+
+export const ScaleInputScaleKind = {
+  preset: 'preset',
+  custom: 'custom',
+} as const;
+
+/**
+ * @nullable
+ */
+export type ScaleInputPresetRatio = typeof ScaleInputPresetRatio[keyof typeof ScaleInputPresetRatio] | null;
+
+
+export const ScaleInputPresetRatio = {
+  '1/8': '1/8',
+  '1/4': '1/4',
+  '3/6': '3/6',
+  '3/4': '3/4',
+  NUMBER_1: '1',
+} as const;
 
 export interface ScaleInput {
   isSet: boolean;
   pixelsPerUnit: number;
   unit: string;
   realWorldUnit: string;
+  scaleKind: ScaleInputScaleKind;
+  /** @nullable */
+  presetRatio: ScaleInputPresetRatio;
+  /** @nullable */
+  calibrationDistanceFeet: number | null;
 }
 
 export type AnnotationType = typeof AnnotationType[keyof typeof AnnotationType];
@@ -146,7 +201,7 @@ export interface ShareInput {
 
 export interface SharePayload {
   document: Document;
-  scale: ScaleConfig;
+  scales: ScaleConfig[];
   annotations: Annotation[];
   measurements: Measurement[];
   share: Share;

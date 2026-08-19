@@ -60,19 +60,19 @@ export function exportMeasurementsCSV(
 }
 
 /**
- * Export the full backup (annotations + measurements + scale) as a JSON file.
+ * Export the full backup (annotations + measurements + page scales) as a JSON file.
  * Works completely offline.
  */
 export function exportBackupJSON(
   annotations: Record<number, Annotation[]>,
   measurements: Record<number, Measurement[]>,
-  scale: Scale,
+  scales: Record<number, Scale>,
   documentName: string | null | undefined
 ) {
   const payload = {
     exportedAt: new Date().toISOString(),
     document: documentName ?? null,
-    scale,
+    scales,
     annotations,
     measurements,
   };

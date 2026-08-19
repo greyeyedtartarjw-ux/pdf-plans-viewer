@@ -9,7 +9,7 @@ export function mergePendingState(
   remoteAnnotations: Record<number, Annotation[]>,
   remoteMeasurements: Record<number, Measurement[]>,
   pendingOps: PendingOp[],
-  remoteScale?: Scale,
+  remoteScales: Record<number, Scale> = {},
 ) {
   const annotations = Object.fromEntries(
     Object.entries(remoteAnnotations).map(([page, items]) => [page, [...items]]),
@@ -17,7 +17,7 @@ export function mergePendingState(
   const measurements = Object.fromEntries(
     Object.entries(remoteMeasurements).map(([page, items]) => [page, [...items]]),
   ) as Record<number, Measurement[]>;
-  let scale = remoteScale;
+  const scales = { ...remoteScales };
 
   for (const op of pendingOps) {
     if (op.opType === 'create_annotation') {
@@ -67,14 +67,17 @@ export function mergePendingState(
         );
       }
     } else if (op.opType === 'set_scale') {
-      scale = {
+      scales[op.pageNumber] = {
         set: op.isSet,
         pixelsPerUnit: op.pixelsPerUnit,
-        unit: op.unit,
-        realWorldUnit: op.realWorldUnit,
+        unit: 'px',
+        realWorldUnit: 'ft',
+        scaleKind: op.scaleKind,
+        presetRatio: op.presetRatio,
+        calibrationDistanceFeet: op.calibrationDistanceFeet,
       };
     }
   }
 
-  return { annotations, measurements, scale };
+  return { annotations, measurements, scales };
 }

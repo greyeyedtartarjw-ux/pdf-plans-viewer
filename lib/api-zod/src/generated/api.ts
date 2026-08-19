@@ -44,36 +44,49 @@ export const UpsertDocumentResponse = zod.object({
 })
 
 
-export const GetDocumentScaleParams = zod.object({
+export const ListDocumentScalesParams = zod.object({
   "documentId": zod.coerce.number()
 })
 
-export const GetDocumentScaleResponse = zod.object({
+export const ListDocumentScalesResponseItem = zod.object({
   "documentId": zod.number(),
+  "pageNumber": zod.number(),
   "isSet": zod.boolean(),
   "pixelsPerUnit": zod.number(),
   "unit": zod.string(),
-  "realWorldUnit": zod.string()
+  "realWorldUnit": zod.string(),
+  "scaleKind": zod.enum(['preset', 'custom']),
+  "presetRatio": zod.union([zod.literal('1/8'),zod.literal('1/4'),zod.literal('3/6'),zod.literal('3/4'),zod.literal('1'),zod.literal(null)]).nullable(),
+  "calibrationDistanceFeet": zod.number().nullable()
+})
+export const ListDocumentScalesResponse = zod.array(ListDocumentScalesResponseItem)
+
+
+export const SetDocumentPageScaleParams = zod.object({
+  "documentId": zod.coerce.number(),
+  "pageNumber": zod.coerce.number()
 })
 
-
-export const SetDocumentScaleParams = zod.object({
-  "documentId": zod.coerce.number()
-})
-
-export const SetDocumentScaleBody = zod.object({
+export const SetDocumentPageScaleBody = zod.object({
   "isSet": zod.boolean(),
   "pixelsPerUnit": zod.number(),
   "unit": zod.string(),
-  "realWorldUnit": zod.string()
+  "realWorldUnit": zod.string(),
+  "scaleKind": zod.enum(['preset', 'custom']),
+  "presetRatio": zod.union([zod.literal('1/8'),zod.literal('1/4'),zod.literal('3/6'),zod.literal('3/4'),zod.literal('1'),zod.literal(null)]).nullable(),
+  "calibrationDistanceFeet": zod.number().nullable()
 })
 
-export const SetDocumentScaleResponse = zod.object({
+export const SetDocumentPageScaleResponse = zod.object({
   "documentId": zod.number(),
+  "pageNumber": zod.number(),
   "isSet": zod.boolean(),
   "pixelsPerUnit": zod.number(),
   "unit": zod.string(),
-  "realWorldUnit": zod.string()
+  "realWorldUnit": zod.string(),
+  "scaleKind": zod.enum(['preset', 'custom']),
+  "presetRatio": zod.union([zod.literal('1/8'),zod.literal('1/4'),zod.literal('3/6'),zod.literal('3/4'),zod.literal('1'),zod.literal(null)]).nullable(),
+  "calibrationDistanceFeet": zod.number().nullable()
 })
 
 
@@ -233,13 +246,17 @@ export const GetShareResponse = zod.object({
   "hash": zod.string(),
   "createdAt": zod.string()
 }),
-  "scale": zod.object({
+  "scales": zod.array(zod.object({
   "documentId": zod.number(),
+  "pageNumber": zod.number(),
   "isSet": zod.boolean(),
   "pixelsPerUnit": zod.number(),
   "unit": zod.string(),
-  "realWorldUnit": zod.string()
-}),
+  "realWorldUnit": zod.string(),
+  "scaleKind": zod.enum(['preset', 'custom']),
+  "presetRatio": zod.union([zod.literal('1/8'),zod.literal('1/4'),zod.literal('3/6'),zod.literal('3/4'),zod.literal('1'),zod.literal(null)]).nullable(),
+  "calibrationDistanceFeet": zod.number().nullable()
+})),
   "annotations": zod.array(zod.object({
   "id": zod.string(),
   "documentId": zod.number(),

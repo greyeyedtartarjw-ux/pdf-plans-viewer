@@ -240,14 +240,8 @@ async function createStaticServer(root) {
       }]);
       return;
     }
-    if (request.method === 'GET' && requestPath === '/api/documents/1/scale') {
-      sendJson(response, {
-        documentId: 1,
-        isSet: false,
-        pixelsPerUnit: 1,
-        unit: 'px',
-        realWorldUnit: 'px',
-      });
+    if (request.method === 'GET' && requestPath === '/api/documents/1/scales') {
+      sendJson(response, []);
       return;
     }
 

@@ -3,3 +3,4 @@
 - [Pending-sync semantics](pending-sync-semantics.md) — preserve ordered edits through ambiguous network failures; retries must be idempotent.
 - [Slow-network viewer checks](slow-network-viewer-checks.md) — test a rendered page through the successful open path, not the lazy viewer shell.
 - [Playwright WebKit on Nix](playwright-webkit-nix.md) — WebKit needs Nix runtime library paths; validate a real render, not its Ubuntu dependency probe.
+- [Page-scale schema migrations](page-scale-schema-migrations.md) — backfill legacy rows before making page keys non-null and composite.

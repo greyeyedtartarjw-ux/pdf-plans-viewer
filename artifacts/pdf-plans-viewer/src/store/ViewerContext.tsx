@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useReducer } from 'react';
-import { Tool, SidebarTab, Scale, Annotation, Measurement, SearchResult, PDFDocumentData } from '../types';
+import { Tool, SidebarTab, Scale, Annotation, Measurement, SearchResult, PDFDocumentData, DEFAULT_SCALE } from '../types';
 
 interface ViewerState {
   pdfDoc: any | null;
@@ -12,7 +12,7 @@ interface ViewerState {
   sidebarTab: SidebarTab;
   sidebarOpen: boolean;
   highlightColor: string;
-  scale: Scale;
+  scales: Record<number, Scale>;
   annotations: Record<number, Annotation[]>;
   measurements: Record<number, Measurement[]>;
   searchQuery: string;
@@ -35,7 +35,7 @@ type Action =
   | { type: 'SET_SIDEBAR_TAB'; tab: SidebarTab }
   | { type: 'TOGGLE_SIDEBAR' }
   | { type: 'SET_HIGHLIGHT_COLOR'; color: string }
-  | { type: 'SET_SCALE'; scale: Scale }
+  | { type: 'SET_PAGE_SCALE'; page: number; scale: Scale }
   | { type: 'ADD_ANNOTATION'; page: number; annotation: Annotation }
   | { type: 'UPDATE_ANNOTATION'; page: number; id: string; data: any }
   | { type: 'REMOVE_ANNOTATION'; page: number; id: string }
@@ -62,11 +62,9 @@ type Action =
       documentId: number;
       annotations: Record<number, Annotation[]>;
       measurements: Record<number, Measurement[]>;
-      scale: Scale;
+       scales: Record<number, Scale>;
       shareToken?: string;
     };
-
-const DEFAULT_SCALE: Scale = { set: false, pixelsPerUnit: 1, unit: 'px', realWorldUnit: 'px' };
 
 const initialState: ViewerState = {
   pdfDoc: null,
@@ -79,7 +77,7 @@ const initialState: ViewerState = {
   sidebarTab: 'pages',
   sidebarOpen: true,
   highlightColor: 'rgba(255, 235, 59, 0.4)',
-  scale: DEFAULT_SCALE,
+  scales: {},
   annotations: {},
   measurements: {},
   searchQuery: '',
@@ -104,7 +102,7 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         currentPage: 1,
         annotations: {},
         measurements: {},
-        scale: DEFAULT_SCALE,
+        scales: {},
         documentId: null,
         measurementOrder: [],
         remoteStateRevision: state.remoteStateRevision + 1,
@@ -123,8 +121,11 @@ function reducer(state: ViewerState, action: Action): ViewerState {
       return { ...state, sidebarOpen: !state.sidebarOpen };
     case 'SET_HIGHLIGHT_COLOR':
       return { ...state, highlightColor: action.color };
-    case 'SET_SCALE':
-      return { ...state, scale: action.scale };
+    case 'SET_PAGE_SCALE':
+      return {
+        ...state,
+        scales: { ...state.scales, [action.page]: action.scale },
+      };
     case 'ADD_ANNOTATION':
       return {
         ...state,
@@ -217,7 +218,7 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         documentId: action.documentId,
         annotations: action.annotations,
         measurements: action.measurements,
-        scale: action.scale,
+        scales: action.scales,
         isSyncing: false,
         shareToken: action.shareToken ?? null,
         measurementOrder: allIds,

@@ -1,42 +1,57 @@
 import React, { useState } from 'react';
-import { useViewerContext } from '../store/ViewerContext';
-import type { Scale } from '../types';
+import { SCALE_PRESETS, type Scale } from '../types';
 import { X, Ruler } from 'lucide-react';
 
 interface ScaleDialogProps {
   onClose: () => void;
-  pixelDistance: number;
+  pageNumber: number;
+  pixelDistance: number | null;
   onScaleSaved: (scale: Scale) => void;
+  onStartCustomCalibration: () => void;
 }
 
-export default function ScaleDialog({ onClose, pixelDistance, onScaleSaved }: ScaleDialogProps) {
-  const { state, dispatch } = useViewerContext();
+export default function ScaleDialog({
+  onClose,
+  pageNumber,
+  pixelDistance,
+  onScaleSaved,
+  onStartCustomCalibration,
+}: ScaleDialogProps) {
   const [realValue, setRealValue] = useState('1');
-  const [unit, setUnit] = useState(state.scale.realWorldUnit !== 'px' ? state.scale.realWorldUnit : 'm');
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
-    const val = parseFloat(realValue);
-    if (isNaN(val) || val <= 0) return;
-
-    const pixelsPerUnit = pixelDistance / val;
-
-    const savedScale: Scale = {
+  const savePreset = (ratio: Scale['presetRatio'], pixelsPerUnit: number) => {
+    if (!ratio) return;
+    onScaleSaved({
       set: true,
       pixelsPerUnit,
       unit: 'px',
-      realWorldUnit: unit,
-    };
-    dispatch({
-      type: 'SET_SCALE',
-      scale: savedScale,
+      realWorldUnit: 'ft',
+      scaleKind: 'preset',
+      presetRatio: ratio,
+      calibrationDistanceFeet: null,
     });
-    onScaleSaved(savedScale);
-    
-    // Also reset active tool back to pan
-    dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
     onClose();
   };
+
+  const handleSaveCustom = (e: React.FormEvent) => {
+    e.preventDefault();
+    const val = parseFloat(realValue);
+    if (isNaN(val) || val <= 0 || !pixelDistance || pixelDistance <= 0) return;
+
+    const pixelsPerUnit = pixelDistance / val;
+    onScaleSaved({
+      set: true,
+      pixelsPerUnit,
+      unit: 'px',
+      realWorldUnit: 'ft',
+      scaleKind: 'custom',
+      presetRatio: null,
+      calibrationDistanceFeet: val,
+    });
+    onClose();
+  };
+
+  const isCustomStep = pixelDistance !== null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -44,68 +59,64 @@ export default function ScaleDialog({ onClose, pixelDistance, onScaleSaved }: Sc
         <div className="px-5 py-4 border-b border-border flex justify-between items-center bg-muted/30">
           <div className="flex items-center gap-2 text-foreground font-semibold">
             <Ruler size={18} className="text-primary" />
-            Calibrate Scale
+            Set scale for page {pageNumber}
           </div>
           <button onClick={onClose} className="p-1 hover:bg-muted rounded-full transition-colors text-muted-foreground hover:text-foreground">
             <X size={16} />
           </button>
         </div>
         
-        <form onSubmit={handleSave} className="p-5">
-          <div className="mb-6 space-y-1">
-            <p className="text-sm text-muted-foreground">
-              You selected a distance of <strong className="font-mono text-foreground">{Math.round(pixelDistance)} px</strong> on the drawing.
-            </p>
-            <p className="text-sm text-muted-foreground">
-              What is the real-world length of this line?
-            </p>
-          </div>
-
-          <div className="flex gap-3 mb-8">
-            <div className="flex-1">
-              <label className="block text-xs font-medium text-foreground mb-1.5 uppercase tracking-wider">Distance</label>
-              <input
-                type="number"
-                step="any"
-                required
-                value={realValue}
-                onChange={(e) => setRealValue(e.target.value)}
-                className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono"
-                autoFocus
-              />
+        {isCustomStep ? (
+          <form onSubmit={handleSaveCustom} className="p-5">
+            <div className="mb-6 space-y-1">
+              <p className="text-sm text-muted-foreground">
+                The selected line is <strong className="font-mono text-foreground">{Math.round(pixelDistance ?? 0)} PDF px</strong>.
+              </p>
+              <p className="text-sm text-muted-foreground">Enter its real-world length in feet.</p>
             </div>
-            <div className="w-1/3">
-              <label className="block text-xs font-medium text-foreground mb-1.5 uppercase tracking-wider">Unit</label>
-              <select
-                value={unit}
-                onChange={(e) => setUnit(e.target.value)}
-                className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-              >
-                <option value="mm">mm</option>
-                <option value="cm">cm</option>
-                <option value="m">m</option>
-                <option value="in">in</option>
-                <option value="ft">ft</option>
-              </select>
+            <label className="block text-xs font-medium text-foreground mb-1.5 uppercase tracking-wider">Distance (feet)</label>
+            <input
+              type="number"
+              min="0.0001"
+              step="any"
+              required
+              value={realValue}
+              onChange={(e) => setRealValue(e.target.value)}
+              className="mb-8 w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent font-mono"
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted">Cancel</button>
+              <button type="submit" className="px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90">Save custom scale</button>
             </div>
-          </div>
-
-          <div className="flex justify-end gap-2">
+          </form>
+        ) : (
+          <div className="p-5">
+            <p className="mb-4 text-sm text-muted-foreground">Choose the plan ratio for this page. All measurements use feet.</p>
+            <div className="grid grid-cols-2 gap-2">
+              {SCALE_PRESETS.map((preset) => (
+                <button
+                  key={preset.ratio}
+                  type="button"
+                  onClick={() => savePreset(preset.ratio, preset.pixelsPerFoot)}
+                  className="rounded-md border border-input px-3 py-3 text-left text-sm font-medium hover:border-primary hover:bg-primary/5"
+                >
+                  {preset.ratio}" = 1'
+                </button>
+              ))}
+            </div>
             <button
               type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted text-foreground transition-colors"
+              onClick={() => { onStartCustomCalibration(); onClose(); }}
+              className="mt-3 w-full rounded-md border border-primary px-3 py-3 text-sm font-medium text-primary hover:bg-primary/5"
             >
-              Cancel
+              Custom two-point calibration
             </button>
-            <button
-              type="submit"
-              className="px-4 py-2 text-sm font-medium rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm"
-            >
-              Set Scale
-            </button>
+            <div className="mt-5 flex justify-end">
+              <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-md hover:bg-muted">Cancel</button>
+            </div>
           </div>
-        </form>
+        )}
       </div>
     </div>
   );

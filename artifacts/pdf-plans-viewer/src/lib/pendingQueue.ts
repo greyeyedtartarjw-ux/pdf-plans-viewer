@@ -78,12 +78,16 @@ export interface PendingMeasurementUpdate {
 export interface PendingScaleUpdate {
   opType: 'set_scale';
   documentId: number;
-  /** One scale record exists per document, so repeated calibrations replace it. */
-  id: 'scale';
+  /** One queued setting per document-page pair; later choices replace earlier ones. */
+  id: string;
+  pageNumber: number;
   isSet: boolean;
   pixelsPerUnit: number;
   unit: string;
   realWorldUnit: string;
+  scaleKind: 'preset' | 'custom';
+  presetRatio: '1/8' | '1/4' | '3/6' | '3/4' | '1' | null;
+  calibrationDistanceFeet: number | null;
   timestamp: number;
   sequence: number;
 }
@@ -172,20 +176,72 @@ export function removeCachedDocumentId(hash: string): void {
   }
 }
 
+function legacyPixelsPerFoot(pixelsPerUnit: number, realWorldUnit: unknown): number | null {
+  const units: Record<string, number> = {
+    ft: 1,
+    m: 0.3048,
+    cm: 30.48,
+    mm: 304.8,
+    in: 12,
+  };
+  const multiplier = typeof realWorldUnit === 'string' ? units[realWorldUnit] : undefined;
+  return multiplier && Number.isFinite(pixelsPerUnit) && pixelsPerUnit > 0
+    ? pixelsPerUnit * multiplier
+    : null;
+}
+
+/** Upgrade document-wide queued calibrations to a custom page-one scale. */
+function migrateLegacyScaleOps(documentId: number, ops: unknown[]): PendingOp[] {
+  let changed = false;
+  const migrated = ops.flatMap((raw): PendingOp[] => {
+    if (!raw || typeof raw !== 'object' || (raw as { opType?: unknown }).opType !== 'set_scale') {
+      return [raw as PendingOp];
+    }
+    const legacy = raw as Record<string, unknown>;
+    if (typeof legacy.pageNumber === 'number') return [legacy as unknown as PendingScaleUpdate];
+    changed = true;
+    const nested = legacy.scale && typeof legacy.scale === 'object'
+      ? legacy.scale as Record<string, unknown>
+      : legacy;
+    const pixelsPerUnit = typeof nested.pixelsPerUnit === 'number'
+      ? legacyPixelsPerFoot(nested.pixelsPerUnit, nested.realWorldUnit)
+      : null;
+    const isSet = nested.isSet === true || nested.set === true;
+    if (!isSet || pixelsPerUnit === null) return [];
+    return [{
+      opType: 'set_scale',
+      documentId,
+      id: 'scale:1',
+      pageNumber: 1,
+      isSet: true,
+      pixelsPerUnit,
+      unit: 'px',
+      realWorldUnit: 'ft',
+      scaleKind: 'custom',
+      presetRatio: null,
+      calibrationDistanceFeet: 1,
+      timestamp: typeof legacy.timestamp === 'number' ? legacy.timestamp : Date.now(),
+      sequence: typeof legacy.sequence === 'number' ? legacy.sequence : Date.now() * 1_000,
+    }];
+  });
+  if (changed) setPendingOps(documentId, migrated);
+  return migrated;
+}
+
 export function getPendingOps(documentId: number): PendingOp[] {
   try {
     const raw = localStorage.getItem(storageKey(documentId));
     if (!raw) return [];
-    return (JSON.parse(raw) as PendingOp[]).sort(comparePendingOps);
+    return migrateLegacyScaleOps(documentId, JSON.parse(raw) as unknown[]).sort(comparePendingOps);
   } catch {
     return [];
   }
 }
 
-/** The latest local calibration overrides a stale server scale after reload. */
-export function getPendingScaleUpdate(documentId: number): PendingScaleUpdate | undefined {
+/** The latest local calibration for one page overrides its stale server value after reload. */
+export function getPendingScaleUpdate(documentId: number, pageNumber: number): PendingScaleUpdate | undefined {
   return getPendingOps(documentId)
-    .filter((op): op is PendingScaleUpdate => op.opType === 'set_scale')
+    .filter((op): op is PendingScaleUpdate => op.opType === 'set_scale' && op.pageNumber === pageNumber)
     .at(-1);
 }
 

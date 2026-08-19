@@ -249,7 +249,7 @@ function MeasurementSection({
 
 export default function MeasurementIndex() {
   const { state, dispatch } = useViewerContext();
-  const { measurements, scale, measurementOrder } = state;
+  const { measurements, measurementOrder } = state;
 
   // Flatten all measurements, preserving page association
   const allMeasurements: MeasurementWithPage[] = Object.entries(measurements).flatMap(([pageStr, ms]) =>
@@ -321,7 +321,7 @@ export default function MeasurementIndex() {
 
   const totalDistance = distances.reduce((acc, m) => acc + m.realWorldValue, 0);
   const totalArea = areas.reduce((acc, m) => acc + m.realWorldValue, 0);
-  const unit = scale.realWorldUnit || 'px';
+  const unit = 'ft';
 
   if (ordered.length === 0) {
     return (

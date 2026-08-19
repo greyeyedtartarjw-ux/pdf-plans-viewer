@@ -1,12 +1,13 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, documentsTable, documentScalesTable } from "@workspace/db";
+import { normalizePageScale } from "../lib/pageScale";
 import {
   UpsertDocumentBody,
-  SetDocumentScaleBody,
+  SetDocumentPageScaleBody,
   UpsertDocumentResponse,
-  GetDocumentScaleResponse,
-  SetDocumentScaleResponse,
+  ListDocumentScalesResponse,
+  SetDocumentPageScaleResponse,
   ListDocumentsResponse,
 } from "@workspace/api-zod";
 
@@ -36,38 +37,75 @@ router.post("/documents", async (req, res): Promise<void> => {
   res.json(UpsertDocumentResponse.parse({ ...doc, createdAt: doc.createdAt.toISOString() }));
 });
 
-// GET /documents/:documentId/scale
-router.get("/documents/:documentId/scale", async (req, res): Promise<void> => {
+function parsePositivePageNumber(value: string | string[] | undefined): number | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const pageNumber = Number.parseInt(raw ?? "", 10);
+  return Number.isSafeInteger(pageNumber) && pageNumber > 0 ? pageNumber : null;
+}
+
+const presetPixelsPerFoot = {
+  "1/8": 9,
+  "1/4": 18,
+  "3/6": 36,
+  "3/4": 54,
+  "1": 72,
+} as const;
+
+// GET /documents/:documentId/scales
+router.get("/documents/:documentId/scales", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.documentId) ? req.params.documentId[0] : req.params.documentId;
   const documentId = parseInt(raw, 10);
   if (isNaN(documentId)) { res.status(400).json({ error: "Invalid documentId" }); return; }
 
-  const [scale] = await db.select().from(documentScalesTable).where(eq(documentScalesTable.documentId, documentId));
-  if (!scale) {
-    // Return default unset scale
-    res.json(GetDocumentScaleResponse.parse({ documentId, isSet: false, pixelsPerUnit: 1, unit: "px", realWorldUnit: "px" }));
-    return;
-  }
-  res.json(GetDocumentScaleResponse.parse({ ...scale }));
+  const scales = await db
+    .select()
+    .from(documentScalesTable)
+    .where(eq(documentScalesTable.documentId, documentId))
+    .orderBy(documentScalesTable.pageNumber);
+  res.json(ListDocumentScalesResponse.parse(scales.map(normalizePageScale)));
 });
 
-// PUT /documents/:documentId/scale
-router.put("/documents/:documentId/scale", async (req, res): Promise<void> => {
+// PUT /documents/:documentId/scales/:pageNumber
+router.put("/documents/:documentId/scales/:pageNumber", async (req, res): Promise<void> => {
   const raw = Array.isArray(req.params.documentId) ? req.params.documentId[0] : req.params.documentId;
   const documentId = parseInt(raw, 10);
   if (isNaN(documentId)) { res.status(400).json({ error: "Invalid documentId" }); return; }
+  const pageNumber = parsePositivePageNumber(req.params.pageNumber);
+  if (!pageNumber) { res.status(400).json({ error: "Invalid pageNumber" }); return; }
 
-  const parsed = SetDocumentScaleBody.safeParse(req.body);
+  const parsed = SetDocumentPageScaleBody.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+  const isValidPreset = parsed.data.scaleKind === "preset"
+    && parsed.data.presetRatio !== null
+    && parsed.data.calibrationDistanceFeet === null
+    && parsed.data.pixelsPerUnit === presetPixelsPerFoot[parsed.data.presetRatio];
+  const isValidCustom = parsed.data.scaleKind === "custom"
+    && parsed.data.presetRatio === null
+    && parsed.data.calibrationDistanceFeet !== null
+    && parsed.data.calibrationDistanceFeet > 0;
+  if (
+    !Number.isFinite(parsed.data.pixelsPerUnit)
+    || parsed.data.pixelsPerUnit <= 0
+    || parsed.data.unit !== "px"
+    || parsed.data.realWorldUnit !== "ft"
+    || (!isValidPreset && !isValidCustom)
+  ) {
+    res.status(400).json({ error: "Invalid feet-based page scale" });
+    return;
+  }
 
-  const [existing] = await db.select().from(documentScalesTable).where(eq(documentScalesTable.documentId, documentId));
+  const key = and(
+    eq(documentScalesTable.documentId, documentId),
+    eq(documentScalesTable.pageNumber, pageNumber),
+  );
+  const [existing] = await db.select().from(documentScalesTable).where(key);
   let scale;
   if (existing) {
-    [scale] = await db.update(documentScalesTable).set(parsed.data).where(eq(documentScalesTable.documentId, documentId)).returning();
+    [scale] = await db.update(documentScalesTable).set(parsed.data).where(key).returning();
   } else {
-    [scale] = await db.insert(documentScalesTable).values({ documentId, ...parsed.data }).returning();
+    [scale] = await db.insert(documentScalesTable).values({ documentId, pageNumber, ...parsed.data }).returning();
   }
-  res.json(SetDocumentScaleResponse.parse({ ...scale }));
+  res.json(SetDocumentPageScaleResponse.parse(scale));
 });
 
 export default router;

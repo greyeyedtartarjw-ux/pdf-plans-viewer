@@ -24,7 +24,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createMeasurement,
   deleteMeasurement,
-  getDocumentScale,
+  listDocumentScales,
   listMeasurements,
   updateMeasurement,
 } from '@workspace/api-client-react';
@@ -58,6 +58,13 @@ interface Point {
 }
 
 type MeasureMode = 'none' | 'distance' | 'area' | 'calibrate';
+const SCALE_PRESETS = [
+  { ratio: '1/8', pixelsPerUnit: 9 },
+  { ratio: '1/4', pixelsPerUnit: 18 },
+  { ratio: '3/6', pixelsPerUnit: 36 },
+  { ratio: '3/4', pixelsPerUnit: 54 },
+  { ratio: '1', pixelsPerUnit: 72 },
+] as const;
 
 interface WebViewMessage {
   type: string;
@@ -159,9 +166,9 @@ export default function ViewerScreen() {
 
   // Calibration state
   const [calibModal, setCalibModal] = useState(false);
+  const [scaleChooserModal, setScaleChooserModal] = useState(false);
   const [calibPixelDist, setCalibPixelDist] = useState(0);
   const [calibValue, setCalibValue] = useState('');
-  const [calibUnit, setCalibUnit] = useState<'m' | 'ft' | 'cm' | 'in' | 'mm'>('m');
   const [calibSaving, setCalibSaving] = useState(false);
 
   // Keep mutable refs for use inside message handler (avoids stale closures)
@@ -239,9 +246,9 @@ export default function ViewerScreen() {
     enabled: !!docId,
   });
 
-  const { data: remoteScale } = useQuery({
-    queryKey: ['scale', docId],
-    queryFn: () => getDocumentScale(docId),
+  const { data: remoteScales = [] } = useQuery({
+    queryKey: ['scales', docId],
+    queryFn: () => listDocumentScales(docId),
     enabled: !!docId,
   });
 
@@ -309,14 +316,13 @@ export default function ViewerScreen() {
     },
   });
 
-  const handleScaleSynced = useCallback((input: DocumentScaleInput) => {
-    queryClient.setQueryData(['scale', docId], input);
-    void queryClient.invalidateQueries({ queryKey: ['scale', docId] });
+  const handleScaleSynced = useCallback((_pageNumber: number, _input: DocumentScaleInput) => {
+    void queryClient.invalidateQueries({ queryKey: ['scales', docId] });
   }, [docId, queryClient]);
-  const { pendingScale, savePendingScale } = usePendingScale(docId, handleScaleSynced);
+  const { pendingScale, savePendingScale } = usePendingScale(docId, page, handleScaleSynced);
   // A locally queued calibration wins over the last server value so new
   // measurements stay accurate after an offline restart.
-  const scale = pendingScale?.input ?? remoteScale;
+  const scale = pendingScale?.input ?? remoteScales.find((item) => item.pageNumber === page);
 
   const updateMeasurementMutation = useMutation({
     mutationFn: ({
@@ -466,6 +472,11 @@ export default function ViewerScreen() {
     naturalPageWidth: number,
   ) {
     if (points.length < 2) return;
+    if (!scale?.isSet || !scale.pixelsPerUnit || scale.pixelsPerUnit <= 0) {
+      Alert.alert('Scale required', `Set a scale for page ${pageRef.current} before measuring.`);
+      clearCalibrationOverlay();
+      return;
+    }
     setSaving(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
@@ -478,24 +489,13 @@ export default function ViewerScreen() {
       ? toPdfArea(viewportValue, cw, naturalPageWidth)
       : toPdfDistance(viewportValue, cw, naturalPageWidth);
 
-    // Apply calibrated scale when available
-    const scaleIsSet = scale?.isSet && scale.pixelsPerUnit && scale.pixelsPerUnit > 0;
-    const linearPPU = scale?.pixelsPerUnit ?? 1;
+    const linearPPU = scale.pixelsPerUnit;
     // For area, scale factor is squared
-    const realWorldValue = scaleIsSet
-      ? isArea
-        ? pixelValue / (linearPPU * linearPPU)
-        : pixelValue / linearPPU
-      : pixelValue;
-    const unit = scaleIsSet
-      ? isArea
-        ? `${scale!.realWorldUnit}²`
-        : scale!.realWorldUnit
-      : isArea
-        ? 'px²'
-        : 'px';
-
-    const label = formatValue(realWorldValue, scaleIsSet ? scale!.realWorldUnit : 'px', isArea);
+    const realWorldValue = isArea
+      ? pixelValue / (linearPPU * linearPPU)
+      : pixelValue / linearPPU;
+    const unit = isArea ? 'ft²' : 'ft';
+    const label = formatValue(realWorldValue, 'ft', isArea);
 
     const measurementId = genId();
     const localId = `local_${measurementId}`;
@@ -654,7 +654,9 @@ export default function ViewerScreen() {
   ) {
     const pixelMeasurements: PixelMeasurement[] = measurements
       .filter(
-        (measurement) => measurement.unit === 'px' || measurement.unit === 'px²',
+        (measurement) =>
+          measurement.pageNumber === page
+          && (measurement.unit === 'px' || measurement.unit === 'px²'),
       )
       .map((measurement) => ({
         id: measurement.id,
@@ -679,38 +681,47 @@ export default function ViewerScreen() {
   }
 
   // --- Calibration save ---
-  async function saveScale() {
-    const num = parseFloat(calibValue);
-    if (!num || num <= 0 || calibPixelDist <= 0) {
-      Alert.alert('Invalid value', 'Please enter a positive real-world distance.');
-      return;
-    }
-    const pixelsPerUnit = calibPixelDist / num;
+  async function saveScaleInput(input: DocumentScaleInput) {
     setCalibSaving(true);
     try {
-      await savePendingScale({
-        pixelsPerUnit,
-        unit: 'px',
-        realWorldUnit: calibUnit,
-        isSet: true,
-      } as DocumentScaleInput);
+      await savePendingScale(input);
       closeCalibrationModal();
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       Alert.alert(
         'Scale saved locally',
-        'Your scale will sync automatically when the connection returns. New measurements will use it now.',
+        `Page ${page} is ready to measure in feet. This scale will sync automatically when the connection returns.`,
       );
       const hasPixelMeasurements = measurements.some(
-        (measurement) => measurement.unit === 'px' || measurement.unit === 'px²',
+        (measurement) =>
+          measurement.pageNumber === page
+          && (measurement.unit === 'px' || measurement.unit === 'px²'),
       );
       if (hasPixelMeasurements) {
-        startPixelMeasurementRecalculation(pixelsPerUnit, calibUnit);
+        startPixelMeasurementRecalculation(input.pixelsPerUnit, 'ft');
       }
     } catch {
       Alert.alert('Save failed', 'Could not save the scale locally. Please try again.');
     } finally {
       setCalibSaving(false);
     }
+  }
+
+  async function saveScale() {
+    const num = parseFloat(calibValue);
+    if (!num || num <= 0 || calibPixelDist <= 0) {
+      Alert.alert('Invalid value', 'Please enter a positive distance in feet.');
+      return;
+    }
+    const pixelsPerUnit = calibPixelDist / num;
+    await saveScaleInput({
+        pixelsPerUnit,
+        unit: 'px',
+        realWorldUnit: 'ft',
+        isSet: true,
+        scaleKind: 'custom',
+        presetRatio: null,
+        calibrationDistanceFeet: num,
+    });
   }
 
   function clearCalibrationOverlay() {
@@ -725,6 +736,10 @@ export default function ViewerScreen() {
 
   // --- Tool actions ---
   function selectMode(next: MeasureMode) {
+    if ((next === 'distance' || next === 'area') && !scale?.isSet) {
+      Alert.alert('Scale required', `Set a scale for page ${page} before measuring.`);
+      return;
+    }
     // 'calibrate' is not a toggle — always activate it fresh
     const newMode = next === 'calibrate' ? 'calibrate' : mode === next ? 'none' : next;
     setMode(newMode);
@@ -734,6 +749,24 @@ export default function ViewerScreen() {
     sendMsg({ type: 'setMode', mode: newMode });
     sendMsg({ type: 'clearCurrentPoints' });
     if (newMode !== 'none') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  }
+
+  function choosePreset(ratio: typeof SCALE_PRESETS[number]['ratio'], pixelsPerUnit: number) {
+    setScaleChooserModal(false);
+    void saveScaleInput({
+      isSet: true,
+      pixelsPerUnit,
+      unit: 'px',
+      realWorldUnit: 'ft',
+      scaleKind: 'preset',
+      presetRatio: ratio,
+      calibrationDistanceFeet: null,
+    });
+  }
+
+  function beginCustomCalibration() {
+    setScaleChooserModal(false);
+    selectMode('calibrate');
   }
 
   function undoLastPoint() {
@@ -945,32 +978,32 @@ export default function ViewerScreen() {
       </View>
 
       {/* Scale status bar */}
-      {scale && (
-        <TouchableOpacity
+      <TouchableOpacity
+        style={[
+          styles.scaleBar,
+          { backgroundColor: scale?.isSet ? colors.card : colors.primary },
+        ]}
+        onPress={() => setScaleChooserModal(true)}
+        activeOpacity={0.8}
+      >
+        <Ionicons
+          name={scale?.isSet ? 'checkmark-circle-outline' : 'warning-outline'}
+          size={13}
+          color={scale?.isSet ? colors.primary : colors.primaryForeground}
+        />
+        <Text
           style={[
-            styles.scaleBar,
-            { backgroundColor: scale.isSet ? colors.card : colors.primary },
+            styles.scaleBarText,
+            { color: scale?.isSet ? colors.foreground : colors.primaryForeground, flex: 1 },
           ]}
-          onPress={() => selectMode('calibrate')}
-          activeOpacity={0.8}
         >
-          <Ionicons
-            name={scale.isSet ? 'checkmark-circle-outline' : 'warning-outline'}
-            size={13}
-            color={scale.isSet ? colors.primary : colors.primaryForeground}
-          />
-          <Text
-            style={[
-              styles.scaleBarText,
-              { color: scale.isSet ? colors.foreground : colors.primaryForeground, flex: 1 },
-            ]}
-          >
-            {scale.isSet
-              ? `Scale: 1 ${scale.realWorldUnit} = ${scale.pixelsPerUnit?.toFixed(2)} plan units  · Tap to recalibrate`
-              : 'No scale set — tap here to calibrate'}
-          </Text>
-        </TouchableOpacity>
-      )}
+          {scale?.isSet
+            ? scale.scaleKind === 'preset'
+              ? `Page ${page}: ${scale.presetRatio}" = 1'  · Tap to change`
+              : `Page ${page}: custom ${scale.calibrationDistanceFeet} ft  · Tap to change`
+            : `Page ${page}: scale not set  · Tap to choose`}
+        </Text>
+      </TouchableOpacity>
 
       {/* Toolbar */}
       <View style={styles.toolbar}>
@@ -1014,7 +1047,7 @@ export default function ViewerScreen() {
           label="Set Scale"
           active={mode === 'calibrate'}
           activeColor="#F59E0B"
-          onPress={() => selectMode('calibrate')}
+          onPress={() => setScaleChooserModal(true)}
           colors={colors}
         />
 
@@ -1126,6 +1159,42 @@ export default function ViewerScreen() {
 
       {/* Calibration modal */}
       <Modal
+        visible={scaleChooserModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setScaleChooserModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalSheet, { paddingBottom: Math.max(bottomPad, 24) }]}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Set scale for page {page}</Text>
+              <TouchableOpacity onPress={() => setScaleChooserModal(false)}>
+                <Ionicons name="close" size={22} color={colors.mutedForeground} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalSubtitle}>Choose the plan ratio. Measurements are always saved in feet.</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              {SCALE_PRESETS.map((preset) => (
+                <TouchableOpacity
+                  key={preset.ratio}
+                  style={[styles.unitBtn, { borderColor: colors.border, backgroundColor: colors.card, minWidth: '30%' }]}
+                  onPress={() => choosePreset(preset.ratio, preset.pixelsPerUnit)}
+                >
+                  <Text style={[styles.unitBtnText, { color: colors.foreground }]}>{preset.ratio}" = 1'</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity
+              style={[styles.saveBtn, { backgroundColor: colors.primary, marginTop: 16 }]}
+              onPress={beginCustomCalibration}
+            >
+              <Text style={[styles.saveBtnText, { color: colors.primaryForeground }]}>Custom two-point calibration</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
         visible={calibModal}
         transparent
         animationType="slide"
@@ -1152,7 +1221,7 @@ export default function ViewerScreen() {
             </Text>
 
             {/* Real-world value input */}
-            <Text style={styles.inputLabel}>Distance</Text>
+            <Text style={styles.inputLabel}>Distance (feet)</Text>
             <TextInput
               style={[styles.textInput, { color: colors.foreground, borderColor: colors.border, backgroundColor: colors.card }]}
               keyboardType="decimal-pad"
@@ -1162,26 +1231,6 @@ export default function ViewerScreen() {
               onChangeText={setCalibValue}
               autoFocus
             />
-
-            {/* Unit picker */}
-            <Text style={styles.inputLabel}>Unit</Text>
-            <View style={styles.unitRow}>
-              {(['m', 'ft', 'cm', 'in', 'mm'] as const).map((u) => (
-                <TouchableOpacity
-                  key={u}
-                  style={[
-                    styles.unitBtn,
-                    { borderColor: colors.border, backgroundColor: colors.card },
-                    calibUnit === u && { backgroundColor: colors.primary, borderColor: colors.primary },
-                  ]}
-                  onPress={() => setCalibUnit(u)}
-                >
-                  <Text style={[styles.unitBtnText, { color: calibUnit === u ? colors.primaryForeground : colors.foreground }]}>
-                    {u}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
 
             <TouchableOpacity
               style={[styles.saveBtn, { backgroundColor: colors.primary, opacity: calibSaving ? 0.6 : 1 }]}

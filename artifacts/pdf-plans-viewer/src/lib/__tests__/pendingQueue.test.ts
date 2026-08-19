@@ -46,6 +46,29 @@ afterEach(() => {
 });
 
 describe('persistent pending-operation queue', () => {
+  it('upgrades a legacy document-wide scale retry to page one before flushing', async () => {
+    const documentId = 100;
+    localStorage.setItem(`pdf-plans-pending-ops-${documentId}`, JSON.stringify([{
+      opType: 'set_scale',
+      documentId,
+      id: 'scale',
+      scale: { set: true, pixelsPerUnit: 10, unit: 'px', realWorldUnit: 'm' },
+      timestamp: 1,
+      sequence: 1,
+    }]));
+
+    expect(getPendingScaleUpdate(documentId, 1)).toMatchObject({
+      id: 'scale:1',
+      pageNumber: 1,
+      pixelsPerUnit: 3.048,
+      scaleKind: 'custom',
+    });
+    const flushed: PendingOp[] = [];
+    await flushPendingOps(documentId, async (op) => { flushed.push(op); }, isAlreadyApplied);
+    expect(flushed).toMatchObject([{ opType: 'set_scale', pageNumber: 1 }]);
+    expect(getPendingOps(documentId)).toEqual([]);
+  });
+
   it('replays an annotation create before its delete when the create fails later', async () => {
     const documentId = 101;
     const id = 'annotation-a';
@@ -317,114 +340,83 @@ describe('persistent pending-operation queue', () => {
     });
   });
 
-  it('keeps an offline scale calibration across reload and replays it first', async () => {
-    const documentId = 107;
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      isSet: true,
-      pixelsPerUnit: 12,
-      unit: 'px',
-      realWorldUnit: 'm',
-      timestamp: 1,
-      sequence: 1,
-    });
+  const queuedScale = (
+    documentId: number,
+    pageNumber: number,
+    pixelsPerUnit: number,
+    sequence: number,
+    scaleKind: 'preset' | 'custom' = 'preset',
+  ) => ({
+    opType: 'set_scale' as const,
+    documentId,
+    pageNumber,
+    id: `scale:${pageNumber}`,
+    isSet: true,
+    pixelsPerUnit,
+    unit: 'px',
+    realWorldUnit: 'ft',
+    scaleKind,
+    presetRatio: scaleKind === 'preset' ? '1/4' as const : null,
+    calibrationDistanceFeet: scaleKind === 'custom' ? 5 : null,
+    timestamp: sequence,
+    sequence,
+  });
 
-    // Reading the queue models reopening the viewer before the API is back.
-    expect(getPendingScaleUpdate(documentId)).toMatchObject({
+  it('keeps an offline page scale across reload and replays it first', async () => {
+    const documentId = 107;
+    addPendingOp(queuedScale(documentId, 2, 12, 1, 'custom'));
+
+    expect(getPendingScaleUpdate(documentId, 2)).toMatchObject({
       pixelsPerUnit: 12,
-      realWorldUnit: 'm',
+      pageNumber: 2,
+      realWorldUnit: 'ft',
     });
 
     const calls: string[] = [];
-    await flushPendingOps(
-      documentId,
-      async (op) => { calls.push(op.opType); },
-      isAlreadyApplied,
-    );
-
+    await flushPendingOps(documentId, async (op) => { calls.push(op.opType); }, isAlreadyApplied);
     expect(calls).toEqual(['set_scale']);
     expect(getPendingOps(documentId)).toEqual([]);
   });
 
-  it('overlays the newest queued scale on the server value after reload', () => {
+  it('overlays each queued scale only onto its matching remote page', () => {
     const documentId = 108;
-    const remoteScale = { set: true, pixelsPerUnit: 2, unit: 'px', realWorldUnit: 'ft' };
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      isSet: true,
-      pixelsPerUnit: 8,
-      unit: 'px',
-      realWorldUnit: 'm',
-      timestamp: 1,
-      sequence: 1,
+    addPendingOp(queuedScale(documentId, 2, 36, 1));
+    const merged = mergePendingState({}, {}, getPendingOps(documentId), {
+      1: { set: true, pixelsPerUnit: 9, unit: 'px', realWorldUnit: 'ft', scaleKind: 'preset', presetRatio: '1/8', calibrationDistanceFeet: null },
+      2: { set: true, pixelsPerUnit: 18, unit: 'px', realWorldUnit: 'ft', scaleKind: 'preset', presetRatio: '1/4', calibrationDistanceFeet: null },
     });
 
-    expect(mergePendingState({}, {}, getPendingOps(documentId), remoteScale).scale).toEqual({
-      set: true,
-      pixelsPerUnit: 8,
-      unit: 'px',
-      realWorldUnit: 'm',
-    });
+    expect(merged.scales[1].pixelsPerUnit).toBe(9);
+    expect(merged.scales[2]).toMatchObject({ pixelsPerUnit: 36, presetRatio: '1/4' });
   });
 
-  it('keeps only the latest pending scale and acknowledges by sequence', () => {
+  it('retains independent latest scale selections for two pages', () => {
     const documentId = 109;
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      isSet: true,
-      pixelsPerUnit: 2,
-      unit: 'px',
-      realWorldUnit: 'ft',
-      timestamp: 1,
-      sequence: 1,
-    });
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      isSet: true,
-      pixelsPerUnit: 4,
-      unit: 'px',
-      realWorldUnit: 'm',
-      timestamp: 2,
-      sequence: 2,
-    });
+    addPendingOp(queuedScale(documentId, 1, 9, 1));
+    addPendingOp(queuedScale(documentId, 2, 18, 2));
+    addPendingOp(queuedScale(documentId, 1, 72, 3));
 
-    expect(getPendingOps(documentId)).toMatchObject([{ sequence: 2, pixelsPerUnit: 4 }]);
-    removePendingOp(documentId, 'scale', 'set_scale', 1);
-    expect(getPendingOps(documentId)).toMatchObject([{ sequence: 2, pixelsPerUnit: 4 }]);
+    expect(getPendingOps(documentId)).toMatchObject([
+      { pageNumber: 2, pixelsPerUnit: 18 },
+      { pageNumber: 1, pixelsPerUnit: 72 },
+    ]);
+    removePendingOp(documentId, 'scale:1', 'set_scale', 1);
+    expect(getPendingScaleUpdate(documentId, 1)?.pixelsPerUnit).toBe(72);
+    expect(getPendingScaleUpdate(documentId, 2)?.pixelsPerUnit).toBe(18);
   });
 
-  it('serializes scale flushes so an older completion cannot erase a newer calibration', async () => {
+  it('does not let an older acknowledgement erase a newer selection on the same page', async () => {
     const documentId = 110;
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      isSet: true,
-      pixelsPerUnit: 2,
-      unit: 'px',
-      realWorldUnit: 'ft',
-      timestamp: 1,
-      sequence: 1,
-    });
-
+    addPendingOp(queuedScale(documentId, 1, 9, 1));
     let releaseFirst!: () => void;
     let markFirstStarted!: () => void;
     const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
     const firstRequest = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const sent: number[] = [];
+
     const firstFlush = flushPendingOps(
       documentId,
       async (op) => {
         if (op.opType === 'set_scale') {
-          sent.push(op.pixelsPerUnit);
           markFirstStarted();
           await firstRequest;
         }
@@ -432,91 +424,10 @@ describe('persistent pending-operation queue', () => {
       isAlreadyApplied,
     );
     await firstStarted;
-
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      isSet: true,
-      pixelsPerUnit: 8,
-      unit: 'px',
-      realWorldUnit: 'm',
-      timestamp: 2,
-      sequence: 2,
-    });
-    const secondFlush = flushPendingOps(
-      documentId,
-      async (op) => {
-        if (op.opType === 'set_scale') sent.push(op.pixelsPerUnit);
-      },
-      isAlreadyApplied,
-    );
-
+    addPendingOp(queuedScale(documentId, 1, 72, 2));
     releaseFirst();
-    await Promise.all([firstFlush, secondFlush]);
-    expect(sent).toEqual([2, 8]);
-    expect(getPendingOps(documentId)).toEqual([]);
-  });
+    await firstFlush;
 
-  it('flushes a newer scale after an older in-flight scale without losing it', async () => {
-    const documentId = 109;
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      scale: { set: true, pixelsPerUnit: 2, unit: 'px', realWorldUnit: 'ft' },
-      timestamp: 1,
-      sequence: 1,
-    });
-
-    let releaseFirst: () => void;
-    const waitForFirst = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let markFirstStarted: () => void;
-    const firstStarted = new Promise<void>((resolve) => {
-      markFirstStarted = resolve;
-    });
-    const sentScales: number[] = [];
-    let serverPixelsPerUnit = 0;
-
-    const firstFlush = flushPendingOps(
-      documentId,
-      async (op) => {
-        if (op.opType !== 'set_scale') return;
-        sentScales.push(op.scale.pixelsPerUnit);
-        markFirstStarted();
-        await waitForFirst;
-        serverPixelsPerUnit = op.scale.pixelsPerUnit;
-      },
-      () => false,
-    );
-
-    await firstStarted;
-    addPendingOp({
-      opType: 'set_scale',
-      documentId,
-      id: 'scale',
-      scale: { set: true, pixelsPerUnit: 4, unit: 'px', realWorldUnit: 'm' },
-      timestamp: 2,
-      sequence: 2,
-    });
-
-    const secondFlush = flushPendingOps(
-      documentId,
-      async (op) => {
-        if (op.opType !== 'set_scale') return;
-        sentScales.push(op.scale.pixelsPerUnit);
-        serverPixelsPerUnit = op.scale.pixelsPerUnit;
-      },
-      () => false,
-    );
-
-    releaseFirst!();
-    await Promise.all([firstFlush, secondFlush]);
-
-    expect(sentScales).toEqual([2, 4]);
-    expect(serverPixelsPerUnit).toBe(4);
-    expect(getPendingOps(documentId)).toEqual([]);
+    expect(getPendingScaleUpdate(documentId, 1)?.pixelsPerUnit).toBe(72);
   });
 });

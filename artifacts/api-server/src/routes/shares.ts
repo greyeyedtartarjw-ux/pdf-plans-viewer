@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import { db, sharesTable, documentsTable, annotationsTable, measurementsTable, documentScalesTable } from "@workspace/db";
+import { normalizePageScale } from "../lib/pageScale";
 import {
   CreateShareBody,
   CreateShareResponse,
@@ -50,15 +51,17 @@ router.get("/shares/:token", async (req, res): Promise<void> => {
   const [doc] = await db.select().from(documentsTable).where(eq(documentsTable.id, share.documentId));
   if (!doc) { res.status(404).json({ error: "Document not found" }); return; }
 
-  const [scale] = await db.select().from(documentScalesTable).where(eq(documentScalesTable.documentId, doc.id));
+  const scales = await db
+    .select()
+    .from(documentScalesTable)
+    .where(eq(documentScalesTable.documentId, doc.id))
+    .orderBy(documentScalesTable.pageNumber);
   const annotations = await db.select().from(annotationsTable).where(eq(annotationsTable.documentId, doc.id));
   const measurements = await db.select().from(measurementsTable).where(eq(measurementsTable.documentId, doc.id));
 
   res.json(GetShareResponse.parse({
     document: { ...doc, createdAt: doc.createdAt.toISOString() },
-    scale: scale
-      ? { ...scale }
-      : { documentId: doc.id, isSet: false, pixelsPerUnit: 1, unit: "px", realWorldUnit: "px" },
+    scales: scales.map(normalizePageScale),
     annotations: annotations.map(a => ({
       ...a,
       fabricData: a.fabricData as Record<string, unknown>,

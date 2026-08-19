@@ -10,8 +10,8 @@ import {
   upsertDocument,
   listAnnotations,
   listMeasurements,
-  getDocumentScale,
-  setDocumentScale,
+  listDocumentScales,
+  setDocumentPageScale,
   getShare,
   createAnnotation,
   deleteAnnotation,
@@ -21,7 +21,7 @@ import {
   useHealthCheck,
   getHealthCheckQueryKey,
 } from '@workspace/api-client-react';
-import type { Scale, Annotation, Measurement } from '../types';
+import { DEFAULT_SCALE, type Scale, type Annotation, type Measurement } from '../types';
 import {
   recalculatePixelMeasurement,
   updateFabricMeasurementLabel,
@@ -81,26 +81,33 @@ function mapApiMeasurements(apiMeas: Awaited<ReturnType<typeof listMeasurements>
 }
 
 // Map API ScaleConfig → local Scale shape
-function mapApiScale(apiScale: Awaited<ReturnType<typeof getDocumentScale>>): Scale {
+function mapApiScale(apiScale: Awaited<ReturnType<typeof listDocumentScales>>[number]): Scale {
   return {
     set: apiScale.isSet,
     pixelsPerUnit: apiScale.pixelsPerUnit,
-    unit: apiScale.unit,
-    realWorldUnit: apiScale.realWorldUnit,
+    unit: 'px',
+    realWorldUnit: 'ft',
+    scaleKind: apiScale.scaleKind,
+    presetRatio: apiScale.presetRatio,
+    calibrationDistanceFeet: apiScale.calibrationDistanceFeet,
   };
 }
 
 /** Tools that are passive (viewing/navigating). Active drawing tools are everything else. */
 const PASSIVE_TOOLS = new Set(['pan', 'select']);
-const DEFAULT_SCALE: Scale = { set: false, pixelsPerUnit: 1, unit: 'px', realWorldUnit: 'px' };
+
+function mapApiScales(apiScales: Awaited<ReturnType<typeof listDocumentScales>>): Record<number, Scale> {
+  return Object.fromEntries(apiScales.map((scale) => [scale.pageNumber, mapApiScale(scale)]));
+}
 
 export default function Shell() {
   const { state, dispatch } = useViewerContext();
-  const { pdfDoc, scale, documentId, activeTool } = state;
+  const { pdfDoc, documentId, activeTool } = state;
+  const scale = state.scales[state.currentPage] ?? DEFAULT_SCALE;
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [showScaleDialog, setShowScaleDialog] = useState(false);
-  const [pixelDistanceToScale, setPixelDistanceToScale] = useState(0);
+  const [pixelDistanceToScale, setPixelDistanceToScale] = useState<number | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
 
   // ── Connectivity check ────────────────────────────────────────────────────
@@ -200,11 +207,14 @@ export default function Shell() {
             fabricData: op.fabricData,
           });
         } else if (op.opType === 'set_scale') {
-          await setDocumentScale(op.documentId, {
+          await setDocumentPageScale(op.documentId, op.pageNumber, {
             isSet: op.isSet,
             pixelsPerUnit: op.pixelsPerUnit,
             unit: op.unit,
             realWorldUnit: op.realWorldUnit,
+            scaleKind: op.scaleKind,
+            presetRatio: op.presetRatio,
+            calibrationDistanceFeet: op.calibrationDistanceFeet,
           });
         }
       },
@@ -240,17 +250,24 @@ export default function Shell() {
    * are durable queue entries and replay after reconnect or reload.
    */
   const handleScaleSaved = useCallback((savedScale: Scale) => {
+    const pageNumber = state.currentPage;
+    dispatch({ type: 'SET_PAGE_SCALE', page: pageNumber, scale: savedScale });
+    dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
     if (documentId) {
       // Queue first so a lost request cannot discard a calibration. The flush
       // replays scale before later recalculated measurement updates.
       addPendingOp({
         opType: 'set_scale',
         documentId,
-        id: 'scale',
+          id: `scale:${pageNumber}`,
+          pageNumber,
         isSet: savedScale.set,
         pixelsPerUnit: savedScale.pixelsPerUnit,
         unit: savedScale.unit,
         realWorldUnit: savedScale.realWorldUnit,
+          scaleKind: savedScale.scaleKind,
+          presetRatio: savedScale.presetRatio,
+          calibrationDistanceFeet: savedScale.calibrationDistanceFeet,
         timestamp: Date.now(),
         sequence: nextPendingSequence(),
       });
@@ -260,12 +277,9 @@ export default function Shell() {
       });
     }
 
-    const pixelMeasurements = Object.entries(state.measurements).flatMap(
-      ([page, measurements]) =>
-        measurements
-          .filter((measurement) => measurement.unit === 'px' || measurement.unit === 'px²')
-          .map((measurement) => ({ page: Number(page), measurement })),
-    );
+    const pixelMeasurements = (state.measurements[pageNumber] ?? [])
+      .filter((measurement) => measurement.unit === 'px' || measurement.unit === 'px²')
+      .map((measurement) => ({ page: pageNumber, measurement }));
 
     for (const { page, measurement } of pixelMeasurements) {
       const values = recalculatePixelMeasurement(measurement, savedScale);
@@ -314,19 +328,20 @@ export default function Shell() {
     documentId,
     flushLocalPendingQueue,
     serverUnreachable,
+    state.currentPage,
     state.measurements,
   ]);
 
   /** Restore queued local work without requiring the API to be reachable. */
   const restoreOfflinePendingState = useCallback((docId: number) => {
     const pendingOps = getPendingOps(docId);
-    const merged = mergePendingState({}, {}, pendingOps, DEFAULT_SCALE);
+    const merged = mergePendingState({}, {}, pendingOps, {});
     dispatch({
       type: 'LOAD_REMOTE_STATE',
       documentId: docId,
       annotations: merged.annotations,
       measurements: merged.measurements,
-      scale: merged.scale ?? DEFAULT_SCALE,
+       scales: merged.scales,
     });
     setPendingCount(pendingOps.length);
     needsRemoteHydrationRef.current = true;
@@ -335,25 +350,25 @@ export default function Shell() {
 
   /** Refresh remote state after an offline reopen, preserving queued local work. */
   const hydrateRemoteDocument = useCallback(async (docId: number) => {
-    const [apiAnnotations, apiMeasurements, apiScale] = await Promise.all([
+    const [apiAnnotations, apiMeasurements, apiScales] = await Promise.all([
       listAnnotations(docId),
       listMeasurements(docId),
-      getDocumentScale(docId),
+      listDocumentScales(docId),
     ]);
     const pendingOps = getPendingOps(docId);
-    const remoteScale = mapApiScale(apiScale);
+    const remoteScales = mapApiScales(apiScales);
     const merged = mergePendingState(
       mapApiAnnotations(apiAnnotations),
       mapApiMeasurements(apiMeasurements),
       pendingOps,
-      remoteScale,
+      remoteScales,
     );
     dispatch({
       type: 'LOAD_REMOTE_STATE',
       documentId: docId,
       annotations: merged.annotations,
       measurements: merged.measurements,
-      scale: merged.scale ?? remoteScale,
+       scales: merged.scales,
     });
     setPendingCount(pendingOps.length);
     needsRemoteHydrationRef.current = false;
@@ -478,7 +493,7 @@ export default function Shell() {
           documentId: payload.document.id,
           annotations: mapApiAnnotations(payload.annotations),
           measurements: mapApiMeasurements(payload.measurements),
-          scale: mapApiScale(payload.scale),
+          scales: mapApiScales(payload.scales),
           shareToken: token,
         });
         setShareMsg(`Shared view loaded for "${payload.document.name}". Open that PDF file to see the drawing.`);
@@ -573,14 +588,17 @@ export default function Shell() {
 
   const handlePrint = () => window.print();
 
-  const handleSetScale = () => dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'set-scale' });
+  const handleSetScale = () => {
+    setPixelDistanceToScale(null);
+    setShowScaleDialog(true);
+  };
 
   const handleExportCSV = () => {
     exportMeasurementsCSV(state.measurements, state.documentData?.name);
   };
 
   const handleExportJSON = () => {
-    exportBackupJSON(state.annotations, state.measurements, state.scale, state.documentData?.name);
+    exportBackupJSON(state.annotations, state.measurements, state.scales, state.documentData?.name);
   };
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -701,7 +719,13 @@ export default function Shell() {
             </div>
             <div className="flex gap-4">
               {state.activeTool === 'set-scale' && <span className="text-primary font-bold">Pick 2 points to set scale…</span>}
-              <span>Scale: {scale.set ? `1 ${scale.unit} = ${(1 / scale.pixelsPerUnit).toFixed(4)} ${scale.realWorldUnit}` : 'Not set'}</span>
+              <span>
+                Page scale: {scale.set
+                  ? scale.scaleKind === 'preset'
+                    ? `${scale.presetRatio}" = 1'`
+                    : `Custom (${scale.calibrationDistanceFeet} ft)`
+                  : 'Not set — choose a scale before measuring'}
+              </span>
               <span>Zoom: {Math.round(state.zoom * 100)}%</span>
             </div>
           </footer>
@@ -713,7 +737,9 @@ export default function Shell() {
           <ScaleDialog
             onClose={() => setShowScaleDialog(false)}
             pixelDistance={pixelDistanceToScale}
+            pageNumber={state.currentPage}
             onScaleSaved={handleScaleSaved}
+            onStartCustomCalibration={() => dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'set-scale' })}
           />
         </React.Suspense>
       )}

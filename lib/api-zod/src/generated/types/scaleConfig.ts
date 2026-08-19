@@ -5,11 +5,19 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { ScaleConfigPresetRatio } from './scaleConfigPresetRatio';
+import type { ScaleConfigScaleKind } from './scaleConfigScaleKind';
 
 export interface ScaleConfig {
   documentId: number;
+  pageNumber: number;
   isSet: boolean;
   pixelsPerUnit: number;
   unit: string;
   realWorldUnit: string;
+  scaleKind: ScaleConfigScaleKind;
+  /** @nullable */
+  presetRatio: ScaleConfigPresetRatio;
+  /** @nullable */
+  calibrationDistanceFeet: number | null;
 }

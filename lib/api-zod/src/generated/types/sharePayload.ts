@@ -13,7 +13,7 @@ import type { Share } from './share';
 
 export interface SharePayload {
   document: Document;
-  scale: ScaleConfig;
+  scales: ScaleConfig[];
   annotations: Annotation[];
   measurements: Measurement[];
   share: Share;

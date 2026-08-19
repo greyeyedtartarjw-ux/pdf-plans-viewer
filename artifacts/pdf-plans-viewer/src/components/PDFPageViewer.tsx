@@ -6,6 +6,7 @@ import { initFabricCanvas, applyToolState, generateId } from '../lib/fabricUtils
 import { rebuildFabricPage } from '../lib/fabricPageState';
 import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints, resolveSnapPoint } from '../lib/measurementUtils';
 import { THEME } from '../lib/constants';
+import { DEFAULT_SCALE } from '../types';
 import {
   createAnnotation,
   deleteAnnotation,
@@ -38,9 +39,10 @@ function isNonRetryable(err: unknown): boolean {
 export default function PDFPageViewer() {
   const { state, dispatch } = useViewerContext();
   const {
-    pdfDoc, currentPage, zoom, activeTool, highlightColor, scale,
+    pdfDoc, currentPage, zoom, activeTool, highlightColor,
     annotations, measurements, documentId, serverUnreachable, remoteStateRevision,
   } = state;
+  const scale = state.scales[currentPage] ?? DEFAULT_SCALE;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -543,6 +545,15 @@ export default function PDFPageViewer() {
         if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
         event.preventDefault();
       } else if (activeTool === 'measure-distance' || activeTool === 'set-scale') {
+        if (activeTool === 'measure-distance' && !scale.set) {
+          toast({
+            variant: 'destructive',
+            title: `Scale required for page ${currentPage}`,
+            description: 'Choose a page scale before creating a distance measurement.',
+          });
+          dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
+          return;
+        }
         if (!isDrawing.current) {
           isDrawing.current = true;
           points.current = [pointer];
@@ -638,6 +649,15 @@ export default function PDFPageViewer() {
           points.current = [];
         }
       } else if (activeTool === 'measure-area') {
+        if (!scale.set) {
+          toast({
+            variant: 'destructive',
+            title: `Scale required for page ${currentPage}`,
+            description: 'Choose a page scale before creating an area measurement.',
+          });
+          dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
+          return;
+        }
         if (!isDrawing.current) {
           isDrawing.current = true;
           setIsAreaDrawingActive(true);
