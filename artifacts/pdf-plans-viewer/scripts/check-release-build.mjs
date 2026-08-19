@@ -50,3 +50,30 @@ console.log(
 );
 
 await runSlowNetworkBrowserCheck({ viewerRoot });
+
+const hasHostedIphoneSafariConfig = Boolean(
+  process.env.IOS_SAFARI_BASE_URL || process.env.IOS_SAFARI_PLAYWRIGHT_WS_ENDPOINT,
+);
+const hostedIphoneSafariRequired = process.env.IOS_SAFARI_REQUIRED === '1';
+
+if (hasHostedIphoneSafariConfig || hostedIphoneSafariRequired) {
+  const hostedIphoneSafariCheck = spawnSync('pnpm', ['run', 'check:iphone-safari'], {
+    cwd: viewerRoot,
+    env: buildEnv,
+    stdio: 'inherit',
+  });
+
+  if (hostedIphoneSafariCheck.error) {
+    throw hostedIphoneSafariCheck.error;
+  }
+
+  if (hostedIphoneSafariCheck.status !== 0) {
+    process.exit(hostedIphoneSafariCheck.status ?? 1);
+  }
+} else {
+  console.log(
+    'Hosted iPhone Safari check not configured; the release check ran the iPhone Safari WebKit emulation. '
+      + 'Set IOS_SAFARI_BASE_URL and IOS_SAFARI_PLAYWRIGHT_WS_ENDPOINT to run the hosted-device check, '
+      + 'or set IOS_SAFARI_REQUIRED=1 to require it in CI.',
+  );
+}

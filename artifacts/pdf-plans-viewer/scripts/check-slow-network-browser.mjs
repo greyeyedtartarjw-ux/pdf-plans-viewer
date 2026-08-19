@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
-import { firefox, webkit } from 'playwright';
+import { devices, firefox, webkit } from 'playwright';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,6 +28,9 @@ const OPTIONAL_CHUNKS = [
 ];
 
 const SLOW_NETWORK_RESPONSE_DELAY_MS = 150;
+const PLAN_OPEN_BUDGET_MS = 6_000;
+const LARGE_PLAN_PAGE_COUNT = 12;
+const LARGE_PLAN_PAGE_BYTES = 512 * 1024;
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -107,6 +110,51 @@ function createFixturePdf() {
     '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 2800 2400] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n',
     `4 0 obj\n<< /Length ${Buffer.byteLength(pageContents, 'utf8')} >>\nstream\n${pageContents}endstream\nendobj\n`,
     '5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n',
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+
+  for (const object of objects) {
+    offsets.push(Buffer.byteLength(pdf, 'utf8'));
+    pdf += object;
+  }
+
+  const xrefOffset = Buffer.byteLength(pdf, 'utf8');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) {
+    pdf += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return pdf;
+}
+
+function createLargeFixturePdf() {
+  const pageIds = Array.from(
+    { length: LARGE_PLAN_PAGE_COUNT },
+    (_, index) => index + 3,
+  );
+  const firstContentId = 3 + LARGE_PLAN_PAGE_COUNT;
+  const fontId = firstContentId + LARGE_PLAN_PAGE_COUNT;
+  const pageContents = [
+    'BT\n/F1 8 Tf\n72 744 Td\n',
+    ' (Representative large plan detail) Tj\n',
+    'ET\n',
+  ].join('');
+  const repeatedPageContent = pageContents.repeat(
+    Math.ceil(LARGE_PLAN_PAGE_BYTES / Buffer.byteLength(pageContents, 'utf8')),
+  );
+  const objects = [
+    `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`,
+    `2 0 obj\n<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${LARGE_PLAN_PAGE_COUNT} >>\nendobj\n`,
+    ...pageIds.map((pageId, index) => {
+      const contentId = firstContentId + index;
+      return `${pageId} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>\nendobj\n`;
+    }),
+    ...pageIds.map((_, index) => {
+      const contentId = firstContentId + index;
+      return `${contentId} 0 obj\n<< /Length ${Buffer.byteLength(repeatedPageContent, 'utf8')} >>\nstream\n${repeatedPageContent}endstream\nendobj\n`;
+    }),
+    `${fontId} 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n`,
   ];
   let pdf = '%PDF-1.4\n';
   const offsets = [0];
@@ -672,13 +720,15 @@ async function runPlaywrightSlowNetworkBrowserCheck({
   browserName,
   staticServer,
   fixturePath,
+  contextOptions = {},
+  openBudgetMs = PLAN_OPEN_BUDGET_MS,
 }) {
-  const nixLibraryPath = browserName === 'WebKit'
+  const nixLibraryPath = browserType === webkit
     ? await getNixRuntimeLibraryPath()
     : '';
   const priorSkipValidation = process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS;
 
-  if (browserName === 'WebKit') {
+  if (browserType === webkit) {
     process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = '1';
   }
 
@@ -702,7 +752,7 @@ async function runPlaywrightSlowNetworkBrowserCheck({
       process.env.PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = priorSkipValidation;
     }
   }
-  const context = await browser.newContext();
+  const context = await browser.newContext(contextOptions);
   const page = await context.newPage();
   const requests = [];
 
@@ -726,21 +776,29 @@ async function runPlaywrightSlowNetworkBrowserCheck({
 
     const selectionStartedAt = Date.now();
     await page.locator('input[type="file"]').first().setInputFiles(fixturePath);
-    await page.waitForFunction(
-      () => {
-        const viewer = document.querySelector('#pdf-viewer-area');
-        const renderedPage = viewer?.querySelector('[data-page-rendered="true"]');
-        const pdfCanvas = renderedPage?.querySelector('canvas');
-        const stillRendering = [...(viewer?.querySelectorAll('span') ?? [])]
-          .some((element) => element.textContent?.includes('Rendering page'));
-        return Boolean(pdfCanvas && pdfCanvas.width > 0 && pdfCanvas.height > 0 && !stillRendering);
-      },
-      undefined,
-      { timeout: 6_000 },
-    );
+    try {
+      await page.waitForFunction(
+        () => {
+          const viewer = document.querySelector('#pdf-viewer-area');
+          const renderedPage = viewer?.querySelector('[data-page-rendered="true"]');
+          const pdfCanvas = renderedPage?.querySelector('canvas');
+          const stillRendering = [...(viewer?.querySelectorAll('span') ?? [])]
+            .some((element) => element.textContent?.includes('Rendering page'));
+          return Boolean(pdfCanvas && pdfCanvas.width > 0 && pdfCanvas.height > 0 && !stillRendering);
+        },
+        undefined,
+        { timeout: openBudgetMs },
+      );
+    } catch (error) {
+      const elapsedMs = Date.now() - selectionStartedAt;
+      throw new Error(
+        `${browserName}: the plan viewer did not render within the ${openBudgetMs}ms `
+          + `open-time budget (elapsed ${elapsedMs}ms). ${error.message}`,
+      );
+    }
     const viewerShownInMs = Date.now() - selectionStartedAt;
 
-    if (viewerShownInMs > 6_000) {
+    if (viewerShownInMs > openBudgetMs) {
       throw new Error(`${browserName}: the plan viewer took ${viewerShownInMs}ms to appear on the throttled connection.`);
     }
 
@@ -755,9 +813,11 @@ async function runPlaywrightSlowNetworkBrowserCheck({
 export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
   const staticServer = await createStaticServer(resolve(viewerRoot, 'dist/public'));
   const fixturePath = resolve(tmpdir(), `plans-viewer-release-check-${randomUUID()}.pdf`);
+  const largeFixturePath = resolve(tmpdir(), `plans-viewer-iphone-safari-check-${randomUUID()}.pdf`);
 
   try {
     await writeFile(fixturePath, createFixturePdf());
+    await writeFile(largeFixturePath, createLargeFixturePdf());
     await runChromiumSlowNetworkBrowserCheck({ staticServer, fixturePath });
     await runPlaywrightSlowNetworkBrowserCheck({
       browserType: firefox,
@@ -771,7 +831,24 @@ export async function runSlowNetworkBrowserCheck({ viewerRoot }) {
       staticServer,
       fixturePath,
     });
+    await runPlaywrightSlowNetworkBrowserCheck({
+      browserType: webkit,
+      browserName: 'iPhone Safari (WebKit emulation)',
+      contextOptions: devices['iPhone 13'],
+      openBudgetMs: PLAN_OPEN_BUDGET_MS,
+      staticServer,
+      fixturePath: largeFixturePath,
+    });
   } finally {
     staticServer.close();
   }
 }
+
+export {
+  assertNoRequests,
+  assertViewerRequests,
+  createLargeFixturePdf,
+  INITIAL_FORBIDDEN_CHUNKS,
+  OPTIONAL_CHUNKS,
+  PLAN_OPEN_BUDGET_MS,
+};
