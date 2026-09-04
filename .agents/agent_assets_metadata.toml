@@ -1,0 +1,16 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "MO9kmcYzfZrxO8lHl-MrK"
+uri = "file://attached_assets/vu360setup_(2)_1787072159398.exe"
+type = "unspecified"
+title = "VU360 Desktop — Windows Installer"
+description = "Current available Windows setup executable (6.5 MB). Download and run to install."
+logical_id = "83cb0015-e5f3-4632-925a-ac953129a144"
+content_hash = "sha256:26847de656c1ded2fdb7d8b78d568439975452ab1e589d2d0af55e8ddf67b9a8"
+size = 6545699
+mtime_ms = 1787072469210
+storage_uri = "gcs://replit-rams-assets-picard/rams/assets/repl:142da6ab-8abc-4048-8799-74a75c0da587/83cb0015-e5f3-4632-925a-ac953129a144/70307e46-aca9-4b6a-9f38-3dea82c1eea2"
+storage_version_token = "1788546077163060"
+content_type = "application/octet-stream"
