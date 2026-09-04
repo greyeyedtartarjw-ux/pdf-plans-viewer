@@ -1,5 +1,4 @@
 import { useCallback } from 'react';
-import { Alert } from 'react-native';
 import { useQueryClient } from '@tanstack/react-query';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
@@ -23,11 +22,31 @@ export function usePdfImport() {
 
   const importFromUri = useCallback(
     async (uri: string, name: string, size?: number) => {
-      // Resolve file size when not provided (e.g. file:// URIs from Share Sheet)
+      const sourceUri = sharedPdfUri(uri);
+      if (!sourceUri) {
+        throw new Error('The shared link is not a supported PDF URL.');
+      }
+
+      const isRemote = sourceUri.toLowerCase().startsWith('https://');
+      let storedSourceUri = sourceUri;
+
+      if (isRemote) {
+        const downloadPath =
+          FileSystem.documentDirectory +
+          `shared_pdf_${Date.now()}_${Math.random().toString(36).slice(2)}.pdf`;
+        const download = await FileSystem.downloadAsync(sourceUri, downloadPath);
+        if (download.status < 200 || download.status >= 300) {
+          await FileSystem.deleteAsync(downloadPath, { idempotent: true });
+          throw new Error(`Could not download the PDF (HTTP ${download.status}).`);
+        }
+        storedSourceUri = download.uri;
+      }
+
+      // Resolve file size when not provided (e.g. shared or downloaded URLs).
       let fileSize = size;
       if (fileSize == null) {
         try {
-          const info = await FileSystem.getInfoAsync(uri);
+          const info = await FileSystem.getInfoAsync(storedSourceUri);
           fileSize = info.exists && 'size' in info ? (info.size ?? 0) : 0;
         } catch {
           fileSize = 0;
@@ -42,7 +61,13 @@ export function usePdfImport() {
         safeFilename.slice(0, 40) +
         `_${fileSize}.pdf`;
 
-      await FileSystem.copyAsync({ from: uri, to: destPath });
+      if (storedSourceUri !== destPath) {
+        if (isRemote) {
+          await FileSystem.moveAsync({ from: storedSourceUri, to: destPath });
+        } else {
+          await FileSystem.copyAsync({ from: storedSourceUri, to: destPath });
+        }
+      }
 
       const doc = await upsertDocument({ name, hash });
 
@@ -74,7 +99,8 @@ export function usePdfImport() {
  */
 export function filenameFromUri(uri: string): string {
   try {
-    const decoded = decodeURIComponent(uri);
+    const sourceUri = sharedPdfUri(uri) ?? uri;
+    const decoded = decodeURIComponent(sourceUri);
     const basename = decoded.split('/').pop() ?? '';
     // Strip query-strings or fragments that iOS sometimes appends
     const clean = basename.split('?')[0].split('#')[0];
@@ -90,7 +116,35 @@ export function filenameFromUri(uri: string): string {
  *   - Any content:// URI with a .pdf extension (Android future-proofing)
  */
 export function isSharedPdfUrl(url: string): boolean {
-  const lower = url.toLowerCase();
-  return (lower.startsWith('file://') || lower.startsWith('content://')) &&
-    lower.split('?')[0].endsWith('.pdf');
+  return sharedPdfUri(url) !== null;
+}
+
+/**
+ * Returns the actual PDF URI from a direct share URL or from the app's
+ * `plans-mobile://open?url=…` custom-scheme entry point.
+ */
+export function sharedPdfUri(url: string): string | null {
+  let candidate = url;
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'plans-mobile:') {
+      candidate = parsed.searchParams.get('url') ?? '';
+    }
+  } catch {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    const supportedProtocol =
+      parsed.protocol === 'file:' ||
+      parsed.protocol === 'content:' ||
+      parsed.protocol === 'https:';
+    return supportedProtocol && parsed.pathname.toLowerCase().endsWith('.pdf')
+      ? candidate
+      : null;
+  } catch {
+    return null;
+  }
 }
