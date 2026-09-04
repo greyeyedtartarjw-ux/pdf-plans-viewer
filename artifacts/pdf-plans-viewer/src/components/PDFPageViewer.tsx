@@ -3,7 +3,7 @@ import * as fabric from 'fabric';
 import { useViewerContext } from '../store/ViewerContext';
 import { renderPageToCanvas } from '../lib/pdfUtils';
 import { initFabricCanvas, applyToolState, generateId } from '../lib/fabricUtils';
-import { rebuildFabricPage } from '../lib/fabricPageState';
+import { createLegacyZoomResolver, rebuildFabricPage } from '../lib/fabricPageState';
 import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints, resolveSnapPoint } from '../lib/measurementUtils';
 import { THEME } from '../lib/constants';
 import { DEFAULT_SCALE } from '../types';
@@ -68,7 +68,12 @@ export default function PDFPageViewer() {
     clientY: number;
   } | null>(null);
   const zoomFocalToken = useRef(0);
+  const legacyZoomResolver = useRef(createLegacyZoomResolver());
   zoomRef.current = zoom;
+
+  useEffect(() => {
+    legacyZoomResolver.current = createLegacyZoomResolver();
+  }, [documentId]);
 
   useEffect(() => {
     const mq = window.matchMedia('(pointer: coarse)');
@@ -482,6 +487,7 @@ export default function PDFPageViewer() {
       (serialized) => fabric.util.enlivenObjects(serialized),
       () => cancelled,
       zoom,
+      legacyZoomResolver.current,
     ).catch((error) => {
       if (!cancelled) console.error('Could not restore saved page objects', error);
     });

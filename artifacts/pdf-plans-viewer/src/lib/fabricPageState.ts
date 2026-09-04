@@ -10,13 +10,34 @@ export interface FabricCanvasForRestore {
 }
 
 type EnlivenObjects = (serialized: unknown[]) => Promise<unknown[]>;
+export type LegacyZoomResolver = (
+  item: SavedFabricItem,
+  pageNumber: number,
+  currentZoom: number,
+) => number;
 
-function getViewerZoom(data: unknown): number {
-  if (!data || typeof data !== 'object') return 1;
+function getViewerZoom(data: unknown): number | undefined {
+  if (!data || typeof data !== 'object') return undefined;
   const viewerZoom = (data as { viewerZoom?: unknown }).viewerZoom;
   return typeof viewerZoom === 'number' && Number.isFinite(viewerZoom) && viewerZoom > 0
     ? viewerZoom
-    : 1;
+    : undefined;
+}
+
+/**
+ * Legacy objects do not contain enough information to reconstruct the zoom at
+ * which they were authored. Preserve their placement at the first zoom where
+ * they are restored, then use that stable baseline for later zoom changes.
+ */
+export function createLegacyZoomResolver(): LegacyZoomResolver {
+  const sourceZoomByItem = new Map<string, number>();
+  return (item, pageNumber, currentZoom) => {
+    const key = `${pageNumber}:${item.id}`;
+    const sourceZoom = sourceZoomByItem.get(key);
+    if (sourceZoom !== undefined) return sourceZoom;
+    sourceZoomByItem.set(key, currentZoom);
+    return currentZoom;
+  };
 }
 
 /**
@@ -32,6 +53,7 @@ export async function rebuildFabricPage(
   enlivenObjects: EnlivenObjects,
   isCancelled: () => boolean,
   zoom = 1,
+  resolveLegacyZoom: LegacyZoomResolver = (_item, _pageNumber, currentZoom) => currentZoom,
 ): Promise<boolean> {
   canvas.clear();
   const items = [
@@ -51,9 +73,10 @@ export async function rebuildFabricPage(
   for (const result of decoded) {
     if (result.status !== 'fulfilled') continue;
     for (const object of result.value.objects) {
-      const sourceZoom = getViewerZoom(
-        items.find((item) => item.id === result.value.id)?.data,
-      );
+      const item = items.find((candidate) => candidate.id === result.value.id);
+      if (!item) continue;
+      const sourceZoom = getViewerZoom(item.data)
+        ?? resolveLegacyZoom(item, pageNumber, zoom);
       const ratio = zoom / sourceZoom;
       if (ratio !== 1 && object && typeof object === 'object') {
         const scaledObject = object as {

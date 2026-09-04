@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { rebuildFabricPage } from '../fabricPageState';
+import { createLegacyZoomResolver, rebuildFabricPage } from '../fabricPageState';
 import { updateFabricMeasurementLabel } from '../measurementUtils';
 
 function createCanvas() {
@@ -22,6 +22,69 @@ function createCanvas() {
 }
 
 describe('Fabric page restoration', () => {
+  it.each([
+    ['highlight', { type: 'Rect', left: 120, top: 80, width: 40, height: 20 }],
+    ['text note', { type: 'IText', left: 120, top: 80, text: 'Legacy note' }],
+    ['distance measurement', { type: 'Group', left: 120, top: 80, objects: [{ type: 'Line' }, { type: 'Text' }] }],
+    ['area measurement', { type: 'Group', left: 120, top: 80, objects: [{ type: 'Polygon' }, { type: 'Text' }] }],
+  ])('keeps a legacy %s anchored after zooming', async (_name, data) => {
+    const canvas = createCanvas();
+    const resolveLegacyZoom = createLegacyZoomResolver();
+    const enliven = async ([serialized]: unknown[]) => {
+      const saved = serialized as { left: number; top: number; type: string };
+      return [{
+        source: saved.type,
+        left: saved.left,
+        top: saved.top,
+        scaleX: 1,
+        scaleY: 1,
+        set(properties: Record<string, number>) {
+          Object.assign(this, properties);
+        },
+      }];
+    };
+    const annotations = data.type === 'Rect' || data.type === 'IText'
+      ? { 1: [{ id: `legacy-${data.type}`, data }] }
+      : {};
+    const measurements = data.type === 'Group'
+      ? { 1: [{ id: `legacy-${data.objects[0].type}`, data }] }
+      : {};
+
+    await rebuildFabricPage(
+      canvas, annotations, measurements, 1, enliven, () => false, 1.5, resolveLegacyZoom,
+    );
+    expect(canvas.objects[0]).toMatchObject({ left: 120, top: 80, scaleX: 1, scaleY: 1 });
+
+    await rebuildFabricPage(
+      canvas, annotations, measurements, 1, enliven, () => false, 3, resolveLegacyZoom,
+    );
+    expect(canvas.objects[0]).toMatchObject({ left: 240, top: 160, scaleX: 2, scaleY: 2 });
+  });
+
+  it('continues to use persisted zoom metadata when it is available', async () => {
+    const canvas = createCanvas();
+    await rebuildFabricPage(
+      canvas,
+      { 1: [{ id: 'modern', data: { source: 'modern', viewerZoom: 2 } }] },
+      {},
+      1,
+      async () => [{
+        source: 'modern',
+        left: 50,
+        top: 25,
+        scaleX: 1,
+        scaleY: 1,
+        set(properties: Record<string, number>) {
+          Object.assign(this, properties);
+        },
+      }],
+      () => false,
+      3,
+      createLegacyZoomResolver(),
+    );
+    expect(canvas.objects[0]).toMatchObject({ left: 75, top: 37.5, scaleX: 1.5, scaleY: 1.5 });
+  });
+
   it('renders pending offline state after the canvas initialized empty, then replaces it on hydration', async () => {
     const canvas = createCanvas();
     const enliven = async ([data]: unknown[]) => [{ source: (data as { source: string }).source }];
