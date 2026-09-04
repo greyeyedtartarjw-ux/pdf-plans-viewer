@@ -19,8 +19,17 @@ import { setBaseUrl } from '@workspace/api-client-react';
 import { usePdfImport, isSharedPdfUrl, filenameFromUri } from '@/hooks/usePdfImport';
 
 // Set the API base URL once at module load — Expo bundles run outside the web
-// proxy and need absolute URLs to reach the shared API server.
-setBaseUrl(`https://${process.env.EXPO_PUBLIC_DOMAIN}`);
+// proxy and need an absolute HTTPS URL to reach the shared API server.
+const configuredApiDomain = process.env.EXPO_PUBLIC_DOMAIN;
+if (!configuredApiDomain) {
+  throw new Error(
+    'EXPO_PUBLIC_DOMAIN is required. Release builds must target a configured API host.',
+  );
+}
+const apiBaseUrl = configuredApiDomain.includes('://')
+  ? configuredApiDomain
+  : `https://${configuredApiDomain}`;
+setBaseUrl(apiBaseUrl);
 
 // Prevent the splash screen from auto-hiding before asset loading is complete.
 SplashScreen.preventAutoHideAsync();

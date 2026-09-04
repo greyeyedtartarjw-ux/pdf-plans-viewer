@@ -8,13 +8,18 @@
     "scheme": "plans-mobile",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#222C39"
     },
     "ios": {
-      "supportsTablet": false,
+      "bundleIdentifier": "com.fieldplans.mobile",
+      "buildNumber": "1",
+      "supportsTablet": true,
       "infoPlist": {
         "CFBundleDocumentTypes": [
           {
@@ -25,10 +30,40 @@
           }
         ],
         "UIFileSharingEnabled": true,
-        "LSSupportsOpeningDocumentsInPlace": false
+        "LSSupportsOpeningDocumentsInPlace": false,
+        "UISupportsDocumentBrowser": false
       }
     },
-    "android": {},
+    "android": {
+      "package": "com.fieldplans.mobile",
+      "versionCode": 1,
+      "permissions": [],
+      "blockedPermissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/icon.png",
+        "backgroundColor": "#222C39"
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "category": [
+            "DEFAULT",
+            "BROWSABLE"
+          ],
+          "data": [
+            {
+              "mimeType": "application/pdf"
+            }
+          ]
+        }
+      ]
+    },
     "web": {
       "favicon": "./assets/images/icon.png"
     },
