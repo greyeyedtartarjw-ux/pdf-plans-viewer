@@ -14,6 +14,7 @@ import {
   createMeasurement,
   deleteMeasurement,
   updateMeasurement,
+  setDocumentPageScale,
 } from '@workspace/api-client-react';
 import { toast } from '@/hooks/use-toast';
 import {
@@ -21,6 +22,7 @@ import {
   comparePendingOps,
   getPendingOps,
   nextPendingSequence,
+  QUEUE_CHANGED_EVENT,
   removePendingOp,
   type PendingOp,
 } from '../lib/pendingQueue';
@@ -132,6 +134,82 @@ export default function PDFPageViewer() {
   const failedSaves = useRef<Array<{ fn: () => Promise<unknown>; errorTitle: string; pendingOp?: PendingOp }>>([]);
   const isProcessingSaves = useRef(false);
 
+  const requestForPendingOp = useCallback((op: PendingOp): (() => Promise<unknown>) => {
+    switch (op.opType) {
+      case 'create_annotation':
+        return () => createAnnotation(op.documentId, {
+          id: op.id,
+          pageNumber: op.pageNumber,
+          type: op.type as any,
+          fabricData: op.fabricData,
+        });
+      case 'delete_annotation':
+        return () => deleteAnnotation(op.documentId, op.id);
+      case 'update_annotation':
+        return () => updateAnnotation(op.documentId, op.id, {
+          fabricData: op.fabricData,
+        });
+      case 'create_measurement':
+        return () => createMeasurement(op.documentId, {
+          id: op.id,
+          pageNumber: op.pageNumber,
+          type: op.type as any,
+          label: op.label,
+          realWorldValue: op.realWorldValue,
+          unit: op.unit,
+          points: op.points,
+          fabricData: op.fabricData,
+        });
+      case 'delete_measurement':
+        return () => deleteMeasurement(op.documentId, op.id);
+      case 'update_measurement':
+        return () => updateMeasurement(op.documentId, op.id, {
+          label: op.label,
+          realWorldValue: op.realWorldValue,
+          unit: op.unit,
+          fabricData: op.fabricData,
+        });
+      case 'set_scale':
+        return () => setDocumentPageScale(op.documentId, op.pageNumber, {
+          isSet: op.isSet,
+          pixelsPerUnit: op.pixelsPerUnit,
+          unit: op.unit,
+          realWorldUnit: op.realWorldUnit,
+          scaleKind: op.scaleKind,
+          presetRatio: op.presetRatio,
+          calibrationDistanceFeet: op.calibrationDistanceFeet,
+        });
+    }
+  }, []);
+
+  // Rebuild executable queue entries from their serializable localStorage
+  // representation whenever a document is opened after a reload.
+  useEffect(() => {
+    const synchronizePersistedQueue = () => {
+      const previousCount = failureQueueCount.current;
+      const persisted = documentId ? getPendingOps(documentId) : [];
+      const transient = failedSaves.current.filter((entry) => !entry.pendingOp);
+      failedSaves.current = [
+        ...transient,
+        ...persisted.map((pendingOp) => ({
+          fn: requestForPendingOp(pendingOp),
+          errorTitle: 'Pending change not saved',
+          pendingOp,
+        })),
+      ];
+      failureQueueCount.current = failedSaves.current.length;
+      if (previousCount > 0 || failureQueueCount.current > 0) recomputeStatus();
+    };
+    const handleQueueChanged = (event: Event) => {
+      const changedDocumentId = (event as CustomEvent<{ documentId?: number }>).detail?.documentId;
+      if (changedDocumentId === documentId) synchronizePersistedQueue();
+    };
+
+    synchronizePersistedQueue();
+    window.addEventListener(QUEUE_CHANGED_EVENT, handleQueueChanged);
+    return () => window.removeEventListener(QUEUE_CHANGED_EVENT, handleQueueChanged);
+  }, [documentId, recomputeStatus, requestForPendingOp]);
+
   const isAlreadyApplied = useCallback((op: PendingOp, error: unknown) => {
     const status = error && typeof error === 'object' && 'status' in error
       ? (error as { status?: unknown }).status
@@ -157,6 +235,11 @@ export default function PDFPageViewer() {
             && op.sequence === entry.pendingOp!.sequence,
           );
         });
+        const reconciledCount = failedSaves.current.length;
+        if (failureQueueCount.current !== reconciledCount) {
+          failureQueueCount.current = reconciledCount;
+          recomputeStatus();
+        }
 
         const entry = [...failedSaves.current].sort((left, right) => {
           if (!left.pendingOp || !right.pendingOp) return 0;
