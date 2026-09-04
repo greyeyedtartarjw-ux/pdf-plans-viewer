@@ -12,6 +12,8 @@ export * from './annotationInput';
 export * from './annotationInputFabricData';
 export * from './annotationInputType';
 export * from './annotationType';
+export * from './annotationUpdateInput';
+export * from './annotationUpdateInputFabricData';
 export * from './document';
 export * from './documentInput';
 export * from './healthStatus';

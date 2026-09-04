@@ -22,6 +22,7 @@ import type {
 import type {
   Annotation,
   AnnotationInput,
+  AnnotationUpdateInput,
   Document,
   DocumentInput,
   HealthStatus,
@@ -561,6 +562,74 @@ const {mutation: mutationOptions, request: requestOptions} = options ?
         TContext
       > => {
       return useMutation(getCreateAnnotationMutationOptions(options));
+    }
+
+export const getUpdateAnnotationUrl = (documentId: number,
+    annotationId: string,) => {
+
+
+
+
+  return `/api/documents/${documentId}/annotations/${annotationId}`
+}
+
+export const updateAnnotation = async (documentId: number,
+    annotationId: string,
+    annotationUpdateInput: AnnotationUpdateInput, options?: Parameters<typeof customFetch>[1]): Promise<Annotation> => {
+
+  return customFetch<Annotation>(getUpdateAnnotationUrl(documentId,annotationId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(annotationUpdateInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateAnnotationMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateAnnotation>>, TError,{documentId: number;annotationId: string;data: BodyType<AnnotationUpdateInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateAnnotation>>, TError,{documentId: number;annotationId: string;data: BodyType<AnnotationUpdateInput>}, TContext> => {
+
+const mutationKey = ['updateAnnotation'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateAnnotation>>, {documentId: number;annotationId: string;data: BodyType<AnnotationUpdateInput>}> = (props) => {
+          const {documentId,annotationId,data} = props ?? {};
+
+          return  updateAnnotation(documentId,annotationId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateAnnotationMutationResult = NonNullable<Awaited<ReturnType<typeof updateAnnotation>>>
+    export type UpdateAnnotationMutationBody = BodyType<AnnotationUpdateInput>
+    export type UpdateAnnotationMutationError = ErrorType<unknown>
+
+    export const useUpdateAnnotation = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateAnnotation>>, TError,{documentId: number;annotationId: string;data: BodyType<AnnotationUpdateInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateAnnotation>>,
+        TError,
+        {documentId: number;annotationId: string;data: BodyType<AnnotationUpdateInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateAnnotationMutationOptions(options));
     }
 
 export const getDeleteAnnotationUrl = (documentId: number,

@@ -340,6 +340,47 @@ describe('persistent pending-operation queue', () => {
     });
   });
 
+  it('restores a corrected annotation alignment from the queue after an offline reload', () => {
+    const documentId = 112;
+    addPendingOp({
+      opType: 'update_annotation',
+      documentId,
+      id: 'legacy-highlight',
+      pageNumber: 2,
+      fabricData: {
+        type: 'Rect',
+        left: 240,
+        top: 180,
+        scaleX: 1.25,
+        scaleY: 1.25,
+        viewerZoom: 1.5,
+      },
+      timestamp: 1,
+      sequence: 1,
+    });
+
+    const restored = mergePendingState(
+      {
+        2: [{
+          id: 'legacy-highlight',
+          pageNumber: 2,
+          type: 'highlight',
+          data: { type: 'Rect', left: 80, top: 60 },
+        }],
+      },
+      {},
+      getPendingOps(documentId),
+    );
+
+    expect(restored.annotations[2][0].data).toMatchObject({
+      left: 240,
+      top: 180,
+      scaleX: 1.25,
+      scaleY: 1.25,
+      viewerZoom: 1.5,
+    });
+  });
+
   const queuedScale = (
     documentId: number,
     pageNumber: number,
@@ -429,5 +470,58 @@ describe('persistent pending-operation queue', () => {
     await firstFlush;
 
     expect(getPendingScaleUpdate(documentId, 1)?.pixelsPerUnit).toBe(72);
+  });
+
+  it('replays a newer annotation alignment queued while the older update is in flight', async () => {
+    const documentId = 111;
+    const id = 'legacy-note';
+    const update = (left: number, sequence: number): PendingOp => ({
+      opType: 'update_annotation',
+      documentId,
+      id,
+      pageNumber: 1,
+      fabricData: { type: 'IText', left, viewerZoom: 1.5 },
+      timestamp: sequence,
+      sequence,
+    });
+    addPendingOp(update(100, 1));
+
+    let releaseFirst!: () => void;
+    let markFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+    const firstRequest = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const sentPositions: number[] = [];
+
+    const firstFlush = flushPendingOps(
+      documentId,
+      async (op) => {
+        if (op.opType !== 'update_annotation') return;
+        sentPositions.push(op.fabricData.left as number);
+        markFirstStarted();
+        await firstRequest;
+      },
+      isAlreadyApplied,
+    );
+    await firstStarted;
+    addPendingOp(update(240, 2));
+    releaseFirst();
+    await firstFlush;
+
+    expect(sentPositions).toEqual([100]);
+    expect(getPendingOps(documentId)).toMatchObject([
+      { opType: 'update_annotation', fabricData: { left: 240 }, sequence: 2 },
+    ]);
+
+    await flushPendingOps(
+      documentId,
+      async (op) => {
+        if (op.opType === 'update_annotation') {
+          sentPositions.push(op.fabricData.left as number);
+        }
+      },
+      isAlreadyApplied,
+    );
+    expect(sentPositions).toEqual([100, 240]);
+    expect(getPendingOps(documentId)).toEqual([]);
   });
 });

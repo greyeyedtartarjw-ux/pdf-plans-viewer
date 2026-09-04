@@ -38,6 +38,7 @@ type Action =
   | { type: 'SET_PAGE_SCALE'; page: number; scale: Scale }
   | { type: 'ADD_ANNOTATION'; page: number; annotation: Annotation }
   | { type: 'UPDATE_ANNOTATION'; page: number; id: string; data: any }
+  | { type: 'UPDATE_MARKING_DATA'; page: number; id: string; data: Record<string, unknown> }
   | { type: 'REMOVE_ANNOTATION'; page: number; id: string }
   | { type: 'ADD_MEASUREMENT'; page: number; measurement: Measurement }
   | { type: 'REMOVE_MEASUREMENT'; page: number; id: string }
@@ -141,6 +142,22 @@ function reducer(state: ViewerState, action: Action): ViewerState {
           ...state.annotations,
           [action.page]: (state.annotations[action.page] || []).map(a =>
             a.id === action.id ? { ...a, data: action.data } : a
+          ),
+        },
+      };
+    case 'UPDATE_MARKING_DATA':
+      return {
+        ...state,
+        annotations: {
+          ...state.annotations,
+          [action.page]: (state.annotations[action.page] || []).map(annotation =>
+            annotation.id === action.id ? { ...annotation, data: action.data } : annotation,
+          ),
+        },
+        measurements: {
+          ...state.measurements,
+          [action.page]: (state.measurements[action.page] || []).map(measurement =>
+            measurement.id === action.id ? { ...measurement, data: action.data } : measurement,
           ),
         },
       };

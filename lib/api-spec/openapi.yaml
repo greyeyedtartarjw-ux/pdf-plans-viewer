@@ -136,6 +136,25 @@ paths:
                 $ref: "#/components/schemas/Annotation"
 
   /documents/{documentId}/annotations/{annotationId}:
+    put:
+      operationId: updateAnnotation
+      tags: [annotations]
+      parameters:
+        - { name: documentId, in: path, required: true, schema: { type: number } }
+        - { name: annotationId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnotationUpdateInput"
+      responses:
+        "200":
+          description: Updated annotation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Annotation"
     delete:
       operationId: deleteAnnotation
       tags: [annotations]
@@ -356,6 +375,14 @@ components:
           type: object
           additionalProperties: true
       required: [id, pageNumber, type, fabricData]
+
+    AnnotationUpdateInput:
+      type: object
+      properties:
+        fabricData:
+          type: object
+          additionalProperties: true
+      required: [fabricData]
 
     Measurement:
       type: object

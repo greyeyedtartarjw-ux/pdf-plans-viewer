@@ -3,15 +3,17 @@ import * as fabric from 'fabric';
 import { useViewerContext } from '../store/ViewerContext';
 import { renderPageToCanvas } from '../lib/pdfUtils';
 import { initFabricCanvas, applyToolState, generateId } from '../lib/fabricUtils';
-import { createLegacyZoomResolver, rebuildFabricPage } from '../lib/fabricPageState';
+import { createLegacyZoomResolver, hasExplicitViewerZoom, rebuildFabricPage } from '../lib/fabricPageState';
 import { calculateDistance, calculateArea, formatMeasurement, deduplicatePoints, resolveSnapPoint } from '../lib/measurementUtils';
 import { THEME } from '../lib/constants';
 import { DEFAULT_SCALE } from '../types';
 import {
   createAnnotation,
   deleteAnnotation,
+  updateAnnotation,
   createMeasurement,
   deleteMeasurement,
+  updateMeasurement,
 } from '@workspace/api-client-react';
 import { toast } from '@/hooks/use-toast';
 import {
@@ -55,6 +57,7 @@ export default function PDFPageViewer() {
   const areaHintTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const [isAreaDrawingActive, setIsAreaDrawingActive] = useState(false);
+  const [selectedLegacyId, setSelectedLegacyId] = useState<string | null>(null);
   const zoomRef = useRef(zoom);
   const renderedZoomRef = useRef(zoom);
   const panState = useRef<{ x: number; y: number } | null>(null);
@@ -212,7 +215,10 @@ export default function PDFPageViewer() {
           break;
         }
 
-        if (op) removePendingOp(op.documentId, op.id, op.opType);
+        // Remove only the exact operation that completed. A newer alignment
+        // save for the same marking may have replaced it while this request
+        // was in flight and must remain queued for the next loop iteration.
+        if (op) removePendingOp(op.documentId, op.id, op.opType, op.sequence);
         failedSaves.current = failedSaves.current.filter((candidate) => candidate !== entry);
         failureQueueCount.current = 0;
         recomputeStatus();
@@ -505,6 +511,95 @@ export default function PDFPageViewer() {
       containerRef.current.style.cursor = activeTool === 'pan' ? 'grab' : '';
     }
   }, [activeTool, fCanvas]);
+
+  const legacyMarkings = [
+    ...(annotations[currentPage] ?? []),
+    ...(measurements[currentPage] ?? []),
+  ].filter((item) => !hasExplicitViewerZoom(item.data));
+  const legacyMarkingIds = new Set(legacyMarkings.map((item) => item.id));
+
+  useEffect(() => {
+    if (!fCanvas) return;
+    const syncSelection = () => {
+      const id = (fCanvas.getActiveObject() as { id?: string } | undefined)?.id;
+      setSelectedLegacyId(id && legacyMarkingIds.has(id) ? id : null);
+    };
+    const clearSelection = () => setSelectedLegacyId(null);
+    fCanvas.on('selection:created', syncSelection);
+    fCanvas.on('selection:updated', syncSelection);
+    fCanvas.on('selection:cleared', clearSelection);
+    return () => {
+      fCanvas.off('selection:created', syncSelection);
+      fCanvas.off('selection:updated', syncSelection);
+      fCanvas.off('selection:cleared', clearSelection);
+    };
+  }, [fCanvas, currentPage, remoteStateRevision]);
+
+  const saveLegacyAlignment = useCallback((ids: string[]) => {
+    if (!fCanvas || !documentId || ids.length === 0) return;
+    const idSet = new Set(ids);
+
+    for (const object of fCanvas.getObjects()) {
+      const id = (object as fabric.Object & { id?: string }).id;
+      if (!id || !idSet.has(id)) continue;
+
+      object.set('viewerZoom', zoom as any);
+      object.setCoords();
+      const fabricData = object.toObject(['id', 'viewerZoom'] as any) as unknown as Record<string, unknown>;
+      dispatch({ type: 'UPDATE_MARKING_DATA', page: currentPage, id, data: fabricData });
+
+      const annotation = (annotations[currentPage] ?? []).find((item) => item.id === id);
+      if (annotation) {
+        void saveWithRetry(
+          () => updateAnnotation(documentId, id, { fabricData }),
+          'Could not save annotation alignment',
+          {
+            opType: 'update_annotation',
+            documentId,
+            id,
+            pageNumber: currentPage,
+            fabricData,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          },
+        );
+        continue;
+      }
+
+      const measurement = (measurements[currentPage] ?? []).find((item) => item.id === id);
+      if (measurement) {
+        void saveWithRetry(
+          () => updateMeasurement(documentId, id, {
+            label: measurement.label,
+            realWorldValue: measurement.realWorldValue,
+            unit: measurement.unit,
+            fabricData,
+          }),
+          'Could not save measurement alignment',
+          {
+            opType: 'update_measurement',
+            documentId,
+            id,
+            pageNumber: currentPage,
+            label: measurement.label,
+            realWorldValue: measurement.realWorldValue,
+            unit: measurement.unit,
+            fabricData,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          },
+        );
+      }
+    }
+
+    fCanvas.discardActiveObject();
+    fCanvas.requestRenderAll();
+    setSelectedLegacyId(null);
+    toast({
+      title: ids.length === 1 ? 'Alignment saved' : 'Page alignments saved',
+      description: 'The corrected positions will remain stable when you reload or zoom.',
+    });
+  }, [annotations, currentPage, dispatch, documentId, fCanvas, measurements, saveWithRetry, zoom]);
 
   // 4. Canvas Events
   useEffect(() => {
@@ -1232,6 +1327,33 @@ export default function PDFPageViewer() {
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 pointer-events-none">
           <div className="bg-card/95 border border-border text-foreground text-xs font-medium px-3 py-2 rounded-md shadow-lg backdrop-blur-sm">
             {areaHint}
+          </div>
+        </div>
+      )}
+      {legacyMarkings.length > 0 && activeTool === 'select' && (
+        <div className="absolute top-4 right-4 z-20 w-72 rounded-md border border-amber-400/50 bg-card/95 p-3 shadow-lg backdrop-blur-sm">
+          <div className="text-sm font-semibold text-foreground">Legacy marking alignment</div>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            Select a marking, drag or resize it to match the PDF, then save its current position.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={!selectedLegacyId}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => selectedLegacyId && saveLegacyAlignment([selectedLegacyId])}
+              className="rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Save selected
+            </button>
+            <button
+              type="button"
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={() => saveLegacyAlignment(legacyMarkings.map((item) => item.id))}
+              className="rounded border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+            >
+              Save page positions ({legacyMarkings.length})
+            </button>
           </div>
         </div>
       )}

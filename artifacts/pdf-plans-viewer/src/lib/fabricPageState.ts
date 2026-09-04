@@ -16,12 +16,16 @@ export type LegacyZoomResolver = (
   currentZoom: number,
 ) => number;
 
-function getViewerZoom(data: unknown): number | undefined {
+export function getViewerZoom(data: unknown): number | undefined {
   if (!data || typeof data !== 'object') return undefined;
   const viewerZoom = (data as { viewerZoom?: unknown }).viewerZoom;
   return typeof viewerZoom === 'number' && Number.isFinite(viewerZoom) && viewerZoom > 0
     ? viewerZoom
     : undefined;
+}
+
+export function hasExplicitViewerZoom(data: unknown): boolean {
+  return getViewerZoom(data) !== undefined;
 }
 
 /**

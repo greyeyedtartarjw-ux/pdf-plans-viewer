@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { createLegacyZoomResolver, rebuildFabricPage } from '../fabricPageState';
+import {
+  createLegacyZoomResolver,
+  hasExplicitViewerZoom,
+  rebuildFabricPage,
+} from '../fabricPageState';
 import { updateFabricMeasurementLabel } from '../measurementUtils';
 
 function createCanvas() {
@@ -22,6 +26,13 @@ function createCanvas() {
 }
 
 describe('Fabric page restoration', () => {
+  it('only treats positive finite viewer zoom metadata as an explicit alignment baseline', () => {
+    expect(hasExplicitViewerZoom({ viewerZoom: 1.5 })).toBe(true);
+    expect(hasExplicitViewerZoom({})).toBe(false);
+    expect(hasExplicitViewerZoom({ viewerZoom: 0 })).toBe(false);
+    expect(hasExplicitViewerZoom({ viewerZoom: Number.NaN })).toBe(false);
+  });
+
   it.each([
     ['highlight', { type: 'Rect', left: 120, top: 80, width: 40, height: 20 }],
     ['text note', { type: 'IText', left: 120, top: 80, text: 'Legacy note' }],

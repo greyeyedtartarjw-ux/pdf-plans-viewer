@@ -4,6 +4,9 @@ import { db, annotationsTable } from "@workspace/db";
 import {
   CreateAnnotationBody,
   CreateAnnotationParams,
+  UpdateAnnotationBody,
+  UpdateAnnotationParams,
+  UpdateAnnotationResponse,
   DeleteAnnotationParams,
   ListAnnotationsParams,
   ListAnnotationsResponse,
@@ -60,6 +63,30 @@ router.post("/documents/:documentId/annotations", async (req, res): Promise<void
   }
 
   res.status(201).json(CreateAnnotationResponse.parse({
+    ...row,
+    fabricData: row.fabricData as Record<string, unknown>,
+    createdAt: row.createdAt.toISOString(),
+  }));
+});
+
+// PUT /documents/:documentId/annotations/:annotationId
+router.put("/documents/:documentId/annotations/:annotationId", async (req, res): Promise<void> => {
+  const params = UpdateAnnotationParams.safeParse(req.params);
+  if (!params.success) { res.status(400).json({ error: params.error.message }); return; }
+
+  const body = UpdateAnnotationBody.safeParse(req.body);
+  if (!body.success) { res.status(400).json({ error: body.error.message }); return; }
+
+  const [row] = await db.update(annotationsTable)
+    .set({ fabricData: body.data.fabricData })
+    .where(and(
+      eq(annotationsTable.documentId, params.data.documentId),
+      eq(annotationsTable.id, params.data.annotationId),
+    ))
+    .returning();
+
+  if (!row) { res.status(404).json({ error: "Annotation not found" }); return; }
+  res.json(UpdateAnnotationResponse.parse({
     ...row,
     fabricData: row.fabricData as Record<string, unknown>,
     createdAt: row.createdAt.toISOString(),

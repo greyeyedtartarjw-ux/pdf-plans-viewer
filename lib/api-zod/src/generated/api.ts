@@ -126,6 +126,25 @@ export const CreateAnnotationResponse = zod.object({
 })
 
 
+export const UpdateAnnotationParams = zod.object({
+  "documentId": zod.coerce.number(),
+  "annotationId": zod.coerce.string()
+})
+
+export const UpdateAnnotationBody = zod.object({
+  "fabricData": zod.record(zod.string(), zod.unknown())
+})
+
+export const UpdateAnnotationResponse = zod.object({
+  "id": zod.string(),
+  "documentId": zod.number(),
+  "pageNumber": zod.number(),
+  "type": zod.enum(['highlight', 'note', 'text']),
+  "fabricData": zod.record(zod.string(), zod.unknown()),
+  "createdAt": zod.string()
+})
+
+
 export const DeleteAnnotationParams = zod.object({
   "documentId": zod.coerce.number(),
   "annotationId": zod.coerce.string()

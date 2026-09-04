@@ -129,6 +129,12 @@ export interface AnnotationInput {
   fabricData: AnnotationInputFabricData;
 }
 
+export type AnnotationUpdateInputFabricData = { [key: string]: unknown };
+
+export interface AnnotationUpdateInput {
+  fabricData: AnnotationUpdateInputFabricData;
+}
+
 export type MeasurementType = typeof MeasurementType[keyof typeof MeasurementType];
 
 

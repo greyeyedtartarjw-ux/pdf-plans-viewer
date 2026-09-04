@@ -30,6 +30,14 @@ export function mergePendingState(
           data: op.fabricData,
         });
       }
+    } else if (op.opType === 'update_annotation') {
+      for (const page of Object.keys(annotations)) {
+        annotations[+page] = annotations[+page].map((annotation) =>
+          annotation.id === op.id
+            ? { ...annotation, data: op.fabricData }
+            : annotation,
+        );
+      }
     } else if (op.opType === 'delete_annotation') {
       for (const page of Object.keys(annotations)) {
         annotations[+page] = annotations[+page].filter((annotation) => annotation.id !== op.id);

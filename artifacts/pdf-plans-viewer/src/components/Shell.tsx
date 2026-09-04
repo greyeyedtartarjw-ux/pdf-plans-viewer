@@ -14,6 +14,7 @@ import {
   setDocumentPageScale,
   getShare,
   createAnnotation,
+  updateAnnotation,
   deleteAnnotation,
   createMeasurement,
   deleteMeasurement,
@@ -182,6 +183,10 @@ export default function Shell() {
             id: op.id,
             pageNumber: op.pageNumber,
             type: op.type as any,
+            fabricData: op.fabricData,
+          });
+        } else if (op.opType === 'update_annotation') {
+          await updateAnnotation(op.documentId, op.id, {
             fabricData: op.fabricData,
           });
         } else if (op.opType === 'delete_annotation') {

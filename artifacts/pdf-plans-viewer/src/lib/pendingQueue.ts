@@ -39,6 +39,16 @@ export interface PendingAnnotationDelete {
   sequence: number;
 }
 
+export interface PendingAnnotationUpdate {
+  opType: 'update_annotation';
+  documentId: number;
+  id: string;
+  pageNumber: number;
+  fabricData: Record<string, unknown>;
+  timestamp: number;
+  sequence: number;
+}
+
 export interface PendingMeasurementCreate {
   opType: 'create_measurement';
   documentId: number;
@@ -95,6 +105,7 @@ export interface PendingScaleUpdate {
 export type PendingOp =
   | PendingAnnotationCreate
   | PendingAnnotationDelete
+  | PendingAnnotationUpdate
   | PendingMeasurementCreate
   | PendingMeasurementDelete
   | PendingMeasurementUpdate
