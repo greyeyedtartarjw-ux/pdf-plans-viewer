@@ -10,6 +10,7 @@ import {
   removePendingOp,
   restorePendingOps,
   setCachedDocumentId,
+  upsertPendingSaveEntry,
   type PendingOp,
 } from '../pendingQueue';
 import { mergePendingState } from '../pendingState';
@@ -99,6 +100,52 @@ describe('persistent pending-operation queue', () => {
       realWorldValue: 12.5,
       unit: 'ft',
     })).toBe('12.50 ft');
+  });
+
+  it('coalesces rapid duplicate saves before reconnect sends them', async () => {
+    const documentId = 111;
+    const firstRequest = vi.fn(() => Promise.resolve());
+    const latestRequest = vi.fn(() => Promise.resolve());
+    const firstOp: PendingOp = {
+      opType: 'create_measurement',
+      documentId,
+      id: 'measurement-rapid-save',
+      pageNumber: 1,
+      type: 'distance',
+      label: '10 ft',
+      realWorldValue: 10,
+      unit: 'ft',
+      points: [{ x: 0, y: 0 }, { x: 100, y: 0 }],
+      fabricData: { id: 'measurement-rapid-save' },
+      timestamp: 1,
+      sequence: 1,
+    };
+    const latestOp: PendingOp = {
+      ...firstOp,
+      timestamp: 2,
+      sequence: 2,
+    };
+
+    addPendingOp(firstOp);
+    let liveQueue = upsertPendingSaveEntry([], {
+      fn: firstRequest,
+      errorTitle: 'Measurement not saved',
+      pendingOp: firstOp,
+    });
+    addPendingOp(latestOp);
+    liveQueue = upsertPendingSaveEntry(liveQueue, {
+      fn: latestRequest,
+      errorTitle: 'Measurement not saved',
+      pendingOp: latestOp,
+    });
+
+    expect(getPendingOps(documentId)).toHaveLength(1);
+    expect(liveQueue).toHaveLength(1);
+
+    await Promise.all(liveQueue.map(({ fn }) => fn()));
+
+    expect(firstRequest).not.toHaveBeenCalled();
+    expect(latestRequest).toHaveBeenCalledTimes(1);
   });
 
   it('upgrades a legacy document-wide scale retry to page one before flushing', async () => {

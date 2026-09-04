@@ -292,6 +292,29 @@ describe('retryAll — partial failure', () => {
     await q.saveWithRetry(() => Promise.reject(new Error('fail')), 'X', true);
     await expect(q.retryAll()).rejects.toThrow('Partial retry failure');
   });
+
+  it('calls a duplicate callback for each queued save but does not re-queue a 409', async () => {
+    const { fn: toast, calls } = makeToast();
+    const q = createSaveQueue(toast);
+    const duplicateSave = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(httpError(409));
+
+    await q.saveWithRetry(duplicateSave, 'Measurement not saved', true);
+    await q.saveWithRetry(duplicateSave, 'Measurement not saved', true);
+    calls.length = 0;
+
+    await expect(q.retryAll()).rejects.toThrow('Partial retry failure');
+
+    expect(duplicateSave).toHaveBeenCalledTimes(2);
+    expect(q.pendingCount()).toBe(0);
+    expect(calls[0]).toMatchObject({
+      variant: 'destructive',
+      title: 'Some changes could not be saved',
+      description: '1 item(s) were rejected by the server and will not be retried.',
+    });
+  });
 });
 
 // ─── window callback integration ─────────────────────────────────────────────

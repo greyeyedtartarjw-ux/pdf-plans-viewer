@@ -24,7 +24,9 @@ import {
   nextPendingSequence,
   QUEUE_CHANGED_EVENT,
   removePendingOp,
+  upsertPendingSaveEntry,
   type PendingOp,
+  type PendingSaveEntry,
 } from '../lib/pendingQueue';
 
 /**
@@ -131,7 +133,7 @@ export default function PDFPageViewer() {
   // Every annotation/measurement operation is persisted at user-action time,
   // before its request starts. The in-memory entry supplies the request
   // function; localStorage supplies the durable ordering across reloads.
-  const failedSaves = useRef<Array<{ fn: () => Promise<unknown>; errorTitle: string; pendingOp?: PendingOp }>>([]);
+  const failedSaves = useRef<PendingSaveEntry[]>([]);
   const isProcessingSaves = useRef(false);
 
   const requestForPendingOp = useCallback((op: PendingOp): (() => Promise<unknown>) => {
@@ -359,14 +361,10 @@ export default function PDFPageViewer() {
       // Durable action-time enqueueing is required so a later successful
       // delete remains ordered behind an earlier unresolved create.
       addPendingOp(pendingOp);
-      failedSaves.current = [
-        ...failedSaves.current.filter((entry) =>
-          !entry.pendingOp
-          || entry.pendingOp.id !== pendingOp.id
-          || entry.pendingOp.opType !== pendingOp.opType,
-        ),
+      failedSaves.current = upsertPendingSaveEntry(
+        failedSaves.current,
         { fn, errorTitle, pendingOp },
-      ];
+      );
 
       if (serverUnreachable) {
         failureQueueCount.current = failedSaves.current.length;

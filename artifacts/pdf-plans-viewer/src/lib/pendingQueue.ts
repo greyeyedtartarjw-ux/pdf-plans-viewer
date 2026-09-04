@@ -113,6 +113,12 @@ export type PendingOp =
   | PendingMeasurementUpdate
   | PendingScaleUpdate;
 
+export interface PendingSaveEntry {
+  fn: () => Promise<unknown>;
+  errorTitle: string;
+  pendingOp?: PendingOp;
+}
+
 export function pendingMeasurementValueLabel(
   measurement: { valueLabel?: string; realWorldValue: number; unit: string },
 ): string {
@@ -296,6 +302,26 @@ export function addPendingOp(op: PendingOp): void {
   dispatchQueueChanged(op.documentId, ordered.length);
 }
 
+/**
+ * Add a callback to the live retry queue, replacing an earlier callback for
+ * the same logical operation. This mirrors addPendingOp's persistent
+ * deduplication so reconnect cannot send a rapid duplicate save twice.
+ */
+export function upsertPendingSaveEntry(
+  entries: PendingSaveEntry[],
+  entry: PendingSaveEntry & { pendingOp: PendingOp },
+): PendingSaveEntry[] {
+  const { pendingOp } = entry;
+  return [
+    ...entries.filter((candidate) =>
+      !candidate.pendingOp
+      || candidate.pendingOp.documentId !== pendingOp.documentId
+      || candidate.pendingOp.id !== pendingOp.id
+      || candidate.pendingOp.opType !== pendingOp.opType,
+    ),
+    entry,
+  ];
+}
 /** Remove a single operation after it has been successfully flushed. */
 export function removePendingOp(
   documentId: number,

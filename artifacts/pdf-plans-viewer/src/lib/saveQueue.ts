@@ -145,19 +145,26 @@ export function createSaveQueue(toast: ToastFn, events: SaveQueueEvents = {}): S
 
     const results = await Promise.allSettled(toRetry.map(({ fn }) => fn()));
 
-    // Re-enqueue only the items that actually failed so a partial success
-    // doesn't lose successfully saved items.
+    // Re-enqueue only retryable failures. Client errors such as 409 Conflict
+    // are terminal and must be surfaced without creating a permanently stuck
+    // retry entry.
     results.forEach((result, i) => {
-      if (result.status === 'rejected') queue.push(toRetry[i]);
+      if (result.status === 'rejected' && !isNonRetryable(result.reason)) {
+        queue.push(toRetry[i]);
+      }
     });
 
     const failureCount = results.filter(r => r.status === 'rejected').length;
+    const retryableFailureCount = queue.length;
     events.onRetryComplete?.(toRetry.length, failureCount);
     if (failureCount > 0) {
       toast({
         variant: 'destructive',
         title: 'Some changes could not be saved',
-        description: `${failureCount} item(s) still failed. Check your connection.`,
+        description:
+          retryableFailureCount > 0
+            ? `${retryableFailureCount} item(s) still failed. Check your connection.`
+            : `${failureCount} item(s) were rejected by the server and will not be retried.`,
       });
       throw new Error('Partial retry failure');
     }
