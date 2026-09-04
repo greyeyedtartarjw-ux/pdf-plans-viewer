@@ -1,5 +1,12 @@
-import React, { useEffect, useRef } from 'react';
-import { Alert } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
@@ -17,6 +24,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import * as Linking from 'expo-linking';
 import { setBaseUrl } from '@workspace/api-client-react';
 import { usePdfImport, isSharedPdfUrl, filenameFromUri } from '@/hooks/usePdfImport';
+import { useColors } from '@/hooks/useColors';
 
 // Set the API base URL once at module load — Expo bundles run outside the web
 // proxy and need an absolute HTTPS URL to reach the shared API server.
@@ -47,6 +55,9 @@ const queryClient = new QueryClient({
  */
 function SharedFileListener() {
   const { importFromUri } = usePdfImport();
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const [importingFilename, setImportingFilename] = useState<string | null>(null);
   // Track URLs we've already handled to avoid double-processing on re-renders
   const handledUrls = useRef<Set<string>>(new Set());
 
@@ -57,12 +68,22 @@ function SharedFileListener() {
 
     handledUrls.current.add(url);
     const name = filenameFromUri(url);
+    setImportingFilename(name);
+    let importError: unknown;
     try {
       await importFromUri(url, name);
     } catch (err) {
+      importError = err;
+    } finally {
+      setImportingFilename(null);
+    }
+
+    if (importError) {
       Alert.alert(
         'Import Failed',
-        (err as Error).message ?? 'Could not open the shared PDF.',
+        importError instanceof Error
+          ? importError.message
+          : 'Could not open the shared PDF.',
       );
     }
   };
@@ -81,7 +102,73 @@ function SharedFileListener() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return null;
+  return (
+    <Modal
+      transparent
+      visible={importingFilename !== null}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={() => {}}
+    >
+      <View
+        style={styles.importOverlay}
+        accessibilityViewIsModal
+        accessibilityLabel={
+          importingFilename ? `Importing ${importingFilename}` : undefined
+        }
+      >
+        <View style={styles.importBackdrop} />
+        <View style={styles.importCard}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.importTitle}>Importing PDF…</Text>
+          <Text style={styles.importFilename} numberOfLines={2}>
+            {importingFilename}
+          </Text>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function makeStyles(colors: ReturnType<typeof useColors>) {
+  return StyleSheet.create({
+    importOverlay: {
+      flex: 1,
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingHorizontal: 32,
+    },
+    importBackdrop: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: colors.sidebar,
+      opacity: 0.72,
+    },
+    importCard: {
+      width: '100%',
+      maxWidth: 360,
+      alignItems: 'center',
+      gap: 12,
+      paddingHorizontal: 24,
+      paddingVertical: 28,
+      borderRadius: colors.radius,
+      backgroundColor: colors.card,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
+    importTitle: {
+      color: colors.cardForeground,
+      fontFamily: 'Inter_600SemiBold',
+      fontSize: 18,
+      textAlign: 'center',
+    },
+    importFilename: {
+      color: colors.mutedForeground,
+      fontFamily: 'Inter_400Regular',
+      fontSize: 14,
+      lineHeight: 20,
+      textAlign: 'center',
+    },
+  });
 }
 
 function RootLayoutNav() {
