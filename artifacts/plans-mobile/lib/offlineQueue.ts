@@ -19,6 +19,7 @@ export interface PendingMeasurement {
     pageNumber: number;
     type: 'distance' | 'area';
     label: string;
+    valueLabel: string;
     realWorldValue: number;
     unit: string;
     points: Record<string, unknown>[];

@@ -153,6 +153,7 @@ export interface Measurement {
   pageNumber: number;
   type: MeasurementType;
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   points: MeasurementPointsItem[];
@@ -177,6 +178,7 @@ export interface MeasurementInput {
   pageNumber: number;
   type: MeasurementInputType;
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   points: MeasurementInputPointsItem[];
@@ -187,6 +189,7 @@ export type MeasurementUpdateInputFabricData = { [key: string]: unknown };
 
 export interface MeasurementUpdateInput {
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   fabricData?: MeasurementUpdateInputFabricData;
@@ -212,4 +215,3 @@ export interface SharePayload {
   measurements: Measurement[];
   share: Share;
 }
-

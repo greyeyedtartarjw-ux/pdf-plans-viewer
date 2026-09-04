@@ -41,6 +41,8 @@ export function useOfflineQueue() {
           if (item.operation === 'update') {
             const updated = await updateMeasurement(item.docId, item.input.id, {
               label: item.input.label,
+              valueLabel: item.input.valueLabel
+                ?? `${item.input.realWorldValue.toFixed(2)} ${item.input.unit}`,
               realWorldValue: item.input.realWorldValue,
               unit: item.input.unit,
             });
@@ -48,7 +50,11 @@ export function useOfflineQueue() {
             return updated;
           }
 
-          const created = await createMeasurement(item.docId, item.input);
+          const created = await createMeasurement(item.docId, {
+            ...item.input,
+            valueLabel: item.input.valueLabel
+              ?? `${item.input.realWorldValue.toFixed(2)} ${item.input.unit}`,
+          });
           // A queued save can be the first measurement confirmed during this
           // session, so write it to the offline cache before removing it from
           // the retry queue.

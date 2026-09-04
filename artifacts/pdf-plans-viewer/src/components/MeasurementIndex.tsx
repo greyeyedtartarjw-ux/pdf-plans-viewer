@@ -1,14 +1,18 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { useViewerContext } from '../store/ViewerContext';
+import { updateMeasurement } from '@workspace/api-client-react';
+import { addPendingOp, nextPendingSequence } from '../lib/pendingQueue';
 import { Trash2, Download, Ruler, Hexagon, ChevronDown, ChevronRight, GripVertical, Pencil, Check, X } from 'lucide-react';
 
 interface MeasurementWithPage {
   id: string;
   type: string;
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   pageNum: number;
+  data: Record<string, unknown>;
 }
 
 // ─── Inline label editor ─────────────────────────────────────────────────────
@@ -18,9 +22,11 @@ interface InlineLabelEditorProps {
   pageNum: number;
   label: string;
   valueLabel: string; // e.g. "12.50 ft"
+  measurement: MeasurementWithPage;
+  documentId: number | null;
 }
 
-function InlineLabelEditor({ id, pageNum, label, valueLabel }: InlineLabelEditorProps) {
+function InlineLabelEditor({ id, pageNum, label, valueLabel, measurement, documentId }: InlineLabelEditorProps) {
   const { dispatch } = useViewerContext();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(label);
@@ -40,9 +46,29 @@ function InlineLabelEditor({ id, pageNum, label, valueLabel }: InlineLabelEditor
     const trimmed = draft.trim();
     if (trimmed && trimmed !== label) {
       dispatch({ type: 'RENAME_MEASUREMENT', page: pageNum, id, label: trimmed });
+      if (documentId) {
+        const payload = {
+          label: trimmed,
+          valueLabel,
+          realWorldValue: measurement.realWorldValue,
+          unit: measurement.unit,
+          fabricData: measurement.data,
+        };
+        void updateMeasurement(documentId, id, payload).catch(() => {
+          addPendingOp({
+            opType: 'update_measurement',
+            documentId,
+            id,
+            pageNumber: pageNum,
+            ...payload,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          });
+        });
+      }
     }
     setEditing(false);
-  }, [draft, label, dispatch, pageNum, id]);
+  }, [draft, label, dispatch, pageNum, id, documentId, measurement, valueLabel]);
 
   const cancel = useCallback(() => {
     setDraft(label);
@@ -118,10 +144,11 @@ interface MeasurementItemProps {
   onDragEnter: (index: number) => void;
   onDragEnd: () => void;
   isDraggingOver: boolean;
+  documentId: number | null;
 }
 
 function MeasurementItem({
-  m, index, onDelete, onNavigate, onDragStart, onDragEnter, onDragEnd, isDraggingOver,
+  m, index, onDelete, onNavigate, onDragStart, onDragEnter, onDragEnd, isDraggingOver, documentId,
 }: MeasurementItemProps) {
   return (
     <div
@@ -162,7 +189,9 @@ function MeasurementItem({
           id={m.id}
           pageNum={m.pageNum}
           label={m.label}
-          valueLabel={`${m.realWorldValue.toFixed(2)} ${m.unit}`}
+          valueLabel={m.valueLabel}
+          measurement={m}
+          documentId={documentId}
         />
       </div>
     </div>
@@ -180,10 +209,11 @@ interface SectionProps {
   onNavigate: (page: number) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
   accentClass: string;
+  documentId: number | null;
 }
 
 function MeasurementSection({
-  title, icon, measurements, subtotalLabel, onDelete, onNavigate, onReorder, accentClass,
+  title, icon, measurements, subtotalLabel, onDelete, onNavigate, onReorder, accentClass, documentId,
 }: SectionProps) {
   const [expanded, setExpanded] = useState(true);
   const dragIndexRef = useRef<number | null>(null);
@@ -237,6 +267,7 @@ function MeasurementSection({
               onDragEnter={handleDragEnter}
               onDragEnd={handleDragEnd}
               isDraggingOver={dragOverIndex === index}
+              documentId={documentId}
             />
           ))}
         </div>
@@ -249,7 +280,7 @@ function MeasurementSection({
 
 export default function MeasurementIndex() {
   const { state, dispatch } = useViewerContext();
-  const { measurements, measurementOrder } = state;
+  const { measurements, measurementOrder, documentId } = state;
 
   // Flatten all measurements, preserving page association
   const allMeasurements: MeasurementWithPage[] = Object.entries(measurements).flatMap(([pageStr, ms]) =>
@@ -358,6 +389,7 @@ export default function MeasurementIndex() {
           onNavigate={handleNavigate}
           onReorder={makeReorderHandler(distances)}
           accentClass="text-blue-400"
+          documentId={documentId}
         />
         <MeasurementSection
           title="Areas"
@@ -368,6 +400,7 @@ export default function MeasurementIndex() {
           onNavigate={handleNavigate}
           onReorder={makeReorderHandler(areas)}
           accentClass="text-violet-400"
+          documentId={documentId}
         />
       </div>
 

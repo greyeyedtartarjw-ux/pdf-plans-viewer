@@ -35,6 +35,7 @@ import {
   countPendingOps,
   flushPendingOps,
   nextPendingSequence,
+  pendingMeasurementValueLabel,
   QUEUE_CHANGED_EVENT,
   removeCachedDocumentId,
   setCachedDocumentId,
@@ -79,6 +80,7 @@ function mapApiMeasurements(apiMeas: Awaited<ReturnType<typeof listMeasurements>
       pageNumber: m.pageNumber,
       type: m.type,
       label: m.label,
+      valueLabel: m.valueLabel,
       realWorldValue: m.realWorldValue,
       unit: m.unit,
       points: m.points as { x: number; y: number }[],
@@ -214,6 +216,7 @@ export default function Shell() {
             pageNumber: op.pageNumber,
             type: op.type as any,
             label: op.label,
+            valueLabel: pendingMeasurementValueLabel(op),
             realWorldValue: op.realWorldValue,
             unit: op.unit,
             points: op.points,
@@ -224,6 +227,7 @@ export default function Shell() {
         } else if (op.opType === 'update_measurement') {
           await updateMeasurement(op.documentId, op.id, {
             label: op.label,
+            valueLabel: pendingMeasurementValueLabel(op),
             realWorldValue: op.realWorldValue,
             unit: op.unit,
             fabricData: op.fabricData,
@@ -305,12 +309,16 @@ export default function Shell() {
 
     for (const { page, measurement } of pixelMeasurements) {
       const values = recalculatePixelMeasurement(measurement, savedScale);
-      const fabricData = updateFabricMeasurementLabel(measurement.data, values.label);
+      const label = measurement.label === measurement.valueLabel ? values.label : measurement.label;
+      const valueLabel = values.label;
+      const fabricData = updateFabricMeasurementLabel(measurement.data, label);
       dispatch({
         type: 'UPDATE_MEASUREMENT_VALUES',
         page,
         id: measurement.id,
-        ...values,
+        valueLabel,
+        realWorldValue: values.realWorldValue,
+        unit: values.unit,
         data: fabricData,
       });
 
@@ -322,7 +330,10 @@ export default function Shell() {
           documentId,
           id: measurement.id,
           pageNumber: page,
-          ...values,
+          label,
+          valueLabel,
+          realWorldValue: values.realWorldValue,
+          unit: values.unit,
           fabricData,
           timestamp: Date.now(),
           sequence: nextPendingSequence(),
@@ -338,7 +349,10 @@ export default function Shell() {
       }
 
       updateMeasurement(documentId, measurement.id, {
-        ...values,
+        label,
+        valueLabel,
+        realWorldValue: values.realWorldValue,
+        unit: values.unit,
         fabricData,
       }).catch((error) => {
         console.error('Could not recalculate measurement', error);

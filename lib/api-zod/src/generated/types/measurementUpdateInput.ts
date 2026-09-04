@@ -9,6 +9,7 @@ import type { MeasurementUpdateInputFabricData } from './measurementUpdateInputF
 
 export interface MeasurementUpdateInput {
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   fabricData?: MeasurementUpdateInputFabricData;

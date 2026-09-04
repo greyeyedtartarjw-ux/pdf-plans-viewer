@@ -50,6 +50,7 @@ export function mergePendingState(
           pageNumber: op.pageNumber,
           type: op.type as Measurement['type'],
           label: op.label,
+          valueLabel: op.valueLabel ?? `${op.realWorldValue.toFixed(2)} ${op.unit}`,
           realWorldValue: op.realWorldValue,
           unit: op.unit,
           points: op.points,

@@ -6,6 +6,7 @@ import {
   getCachedDocumentId,
   getPendingOps,
   getPendingScaleUpdate,
+  pendingMeasurementValueLabel,
   removePendingOp,
   restorePendingOps,
   setCachedDocumentId,
@@ -91,6 +92,13 @@ describe('persistent pending-operation queue', () => {
     restorePendingOps(documentId, [stale]);
 
     expect(getPendingOps(documentId)).toEqual([newer]);
+  });
+
+  it('reconstructs generated labels for measurement operations saved before valueLabel existed', () => {
+    expect(pendingMeasurementValueLabel({
+      realWorldValue: 12.5,
+      unit: 'ft',
+    })).toBe('12.50 ft');
   });
 
   it('upgrades a legacy document-wide scale retry to page one before flushing', async () => {

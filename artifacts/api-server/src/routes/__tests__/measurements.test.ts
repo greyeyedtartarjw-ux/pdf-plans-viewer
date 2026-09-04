@@ -22,6 +22,7 @@ const sampleMeasurement = (id: string, documentId: number) => ({
   pageNumber: 1,
   type: "distance" as const,
   label: "Wall length",
+  valueLabel: "5.00 m",
   realWorldValue: 5.0,
   unit: "m",
   points: [{ x: 0, y: 0 }, { x: 100, y: 0 }],
@@ -56,6 +57,7 @@ describe("POST /api/documents/:documentId/measurements — idempotent create", (
     expect(res.body.id).toBe(id);
     expect(res.body.documentId).toBe(documentId);
     expect(res.body.label).toBe("Wall length");
+    expect(res.body.valueLabel).toBe("5.00 m");
   });
 
   it("returns 200 with the existing record on a duplicate POST (same id)", async () => {
@@ -121,6 +123,7 @@ describe("PUT /api/documents/:documentId/measurements/:measurementId", () => {
       .put(`/api/documents/${documentId}/measurements/${id}`)
       .send({
         label: "2.50 m",
+        valueLabel: "2.50 m",
         realWorldValue: 2.5,
         unit: "m",
         fabricData: {
@@ -134,6 +137,7 @@ describe("PUT /api/documents/:documentId/measurements/:measurementId", () => {
       id,
       documentId,
       label: "2.50 m",
+      valueLabel: "2.50 m",
       realWorldValue: 2.5,
       unit: "m",
       fabricData: {
@@ -142,6 +146,33 @@ describe("PUT /api/documents/:documentId/measurements/:measurementId", () => {
       },
       pageNumber: 1,
       type: "distance",
+    });
+  });
+
+  it("persists a custom label separately from the generated value label", async () => {
+    const id = randomUUID();
+    await request(app)
+      .post(`/api/documents/${documentId}/measurements`)
+      .send(sampleMeasurement(id, documentId))
+      .expect(201);
+
+    await request(app)
+      .put(`/api/documents/${documentId}/measurements/${id}`)
+      .send({
+        label: "North wall",
+        valueLabel: "5.00 m",
+        realWorldValue: 5,
+        unit: "m",
+        fabricData: { type: "Group" },
+      })
+      .expect(200);
+
+    const listed = await request(app)
+      .get(`/api/documents/${documentId}/measurements`)
+      .expect(200);
+    expect(listed.body[0]).toMatchObject({
+      label: "North wall",
+      valueLabel: "5.00 m",
     });
   });
 });

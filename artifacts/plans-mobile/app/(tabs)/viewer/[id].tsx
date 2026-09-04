@@ -506,6 +506,7 @@ export default function ViewerScreen() {
       pageNumber: pageRef.current,
       type: isArea ? ('area' as const) : ('distance' as const),
       label,
+      valueLabel: label,
       realWorldValue,
       unit,
       points: points as unknown as Record<string, unknown>[],
@@ -598,6 +599,7 @@ export default function ViewerScreen() {
           pageNumber: source.pageNumber,
           type: source.type,
           label: values.label,
+          valueLabel: values.valueLabel,
           realWorldValue: values.realWorldValue,
           unit: values.unit,
           points: source.points as Record<string, unknown>[],
@@ -662,6 +664,10 @@ export default function ViewerScreen() {
       .map((measurement) => ({
         id: measurement.id,
         type: measurement.type,
+        label: measurement.label,
+        valueLabel: 'valueLabel' in measurement && typeof measurement.valueLabel === 'string'
+          ? measurement.valueLabel
+          : measurement.label,
         realWorldValue: measurement.realWorldValue,
         isPending: measurement.isPending,
       }));

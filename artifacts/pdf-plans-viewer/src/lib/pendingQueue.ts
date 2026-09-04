@@ -56,6 +56,7 @@ export interface PendingMeasurementCreate {
   pageNumber: number;
   type: string;
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   points: { x: number; y: number }[];
@@ -78,6 +79,7 @@ export interface PendingMeasurementUpdate {
   id: string;
   pageNumber: number;
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   fabricData: Record<string, unknown>;
@@ -111,6 +113,11 @@ export type PendingOp =
   | PendingMeasurementUpdate
   | PendingScaleUpdate;
 
+export function pendingMeasurementValueLabel(
+  measurement: { valueLabel?: string; realWorldValue: number; unit: string },
+): string {
+  return measurement.valueLabel ?? `${measurement.realWorldValue.toFixed(2)} ${measurement.unit}`;
+}
 let lastSequence = 0;
 const flushLanes = new Map<number, Promise<void>>();
 

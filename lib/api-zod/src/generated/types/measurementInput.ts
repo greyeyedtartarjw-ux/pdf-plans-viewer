@@ -14,6 +14,7 @@ export interface MeasurementInput {
   pageNumber: number;
   type: MeasurementInputType;
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   points: MeasurementInputPointsItem[];

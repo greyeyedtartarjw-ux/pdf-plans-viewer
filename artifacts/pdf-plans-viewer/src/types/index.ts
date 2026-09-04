@@ -52,6 +52,7 @@ export interface Measurement {
   pageNumber: number;
   type: 'distance' | 'area';
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
   points: { x: number; y: number }[];

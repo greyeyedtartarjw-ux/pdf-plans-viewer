@@ -47,7 +47,7 @@ type Action =
       type: 'UPDATE_MEASUREMENT_VALUES';
       page: number;
       id: string;
-      label: string;
+      valueLabel: string;
       realWorldValue: number;
       unit: string;
       data: Record<string, unknown>;
@@ -212,7 +212,8 @@ function reducer(state: ViewerState, action: Action): ViewerState {
             m.id === action.id
               ? {
                   ...m,
-                  label: action.label,
+                  label: m.label === m.valueLabel ? action.valueLabel : m.label,
+                  valueLabel: action.valueLabel,
                   realWorldValue: action.realWorldValue,
                   unit: action.unit,
                   data: action.data,

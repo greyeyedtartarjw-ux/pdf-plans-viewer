@@ -11,6 +11,7 @@ export const measurementsTable = pgTable("measurements", {
   pageNumber: integer("page_number").notNull(),
   type: text("type", { enum: ["distance", "area"] }).notNull(),
   label: text("label").notNull(),
+  valueLabel: text("value_label"),
   realWorldValue: real("real_world_value").notNull(),
   unit: text("unit").notNull(),
   points: jsonb("points").notNull(),

@@ -29,6 +29,7 @@ function pending(localId: string): PendingMeasurement {
       pageNumber: 1,
       type: 'distance',
       label: '12.0 px',
+      valueLabel: '12.0 px',
       realWorldValue: 12,
       unit: 'px',
       points: [{ x: 0, y: 0 }, { x: 12, y: 0 }],

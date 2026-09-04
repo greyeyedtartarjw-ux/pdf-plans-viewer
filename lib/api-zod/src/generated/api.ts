@@ -163,6 +163,7 @@ export const ListMeasurementsResponseItem = zod.object({
   "pageNumber": zod.number(),
   "type": zod.enum(['distance', 'area']),
   "label": zod.string(),
+  "valueLabel": zod.string(),
   "realWorldValue": zod.number(),
   "unit": zod.string(),
   "points": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -181,6 +182,7 @@ export const CreateMeasurementBody = zod.object({
   "pageNumber": zod.number(),
   "type": zod.enum(['distance', 'area']),
   "label": zod.string(),
+  "valueLabel": zod.string(),
   "realWorldValue": zod.number(),
   "unit": zod.string(),
   "points": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -193,6 +195,7 @@ export const CreateMeasurementResponse = zod.object({
   "pageNumber": zod.number(),
   "type": zod.enum(['distance', 'area']),
   "label": zod.string(),
+  "valueLabel": zod.string(),
   "realWorldValue": zod.number(),
   "unit": zod.string(),
   "points": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -208,6 +211,7 @@ export const UpdateMeasurementParams = zod.object({
 
 export const UpdateMeasurementBody = zod.object({
   "label": zod.string(),
+  "valueLabel": zod.string(),
   "realWorldValue": zod.number(),
   "unit": zod.string(),
   "fabricData": zod.record(zod.string(), zod.unknown()).optional()
@@ -219,6 +223,7 @@ export const UpdateMeasurementResponse = zod.object({
   "pageNumber": zod.number(),
   "type": zod.enum(['distance', 'area']),
   "label": zod.string(),
+  "valueLabel": zod.string(),
   "realWorldValue": zod.number(),
   "unit": zod.string(),
   "points": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -290,6 +295,7 @@ export const GetShareResponse = zod.object({
   "pageNumber": zod.number(),
   "type": zod.enum(['distance', 'area']),
   "label": zod.string(),
+  "valueLabel": zod.string(),
   "realWorldValue": zod.number(),
   "unit": zod.string(),
   "points": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -304,5 +310,4 @@ export const GetShareResponse = zod.object({
   "expiresAt": zod.string().nullable()
 })
 })
-
 

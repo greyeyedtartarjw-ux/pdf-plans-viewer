@@ -15,6 +15,24 @@ import {
 
 const router: IRouter = Router();
 
+function serializeMeasurement<T extends {
+  label: string;
+  valueLabel: string | null;
+  realWorldValue: number;
+  unit: string;
+  points: unknown;
+  fabricData: unknown;
+  createdAt: Date;
+}>(measurement: T) {
+  return {
+    ...measurement,
+    valueLabel: measurement.valueLabel ?? `${measurement.realWorldValue.toFixed(2)} ${measurement.unit}`,
+    points: measurement.points as Array<Record<string, unknown>>,
+    fabricData: measurement.fabricData as Record<string, unknown>,
+    createdAt: measurement.createdAt.toISOString(),
+  };
+}
+
 // GET /documents/:documentId/measurements
 router.get("/documents/:documentId/measurements", async (req, res): Promise<void> => {
   const params = ListMeasurementsParams.safeParse(req.params);
@@ -24,12 +42,7 @@ router.get("/documents/:documentId/measurements", async (req, res): Promise<void
     .where(eq(measurementsTable.documentId, params.data.documentId))
     .orderBy(measurementsTable.createdAt);
 
-  res.json(ListMeasurementsResponse.parse(rows.map(r => ({
-    ...r,
-    points: r.points as Array<Record<string, unknown>>,
-    fabricData: r.fabricData as Record<string, unknown>,
-    createdAt: r.createdAt.toISOString(),
-  }))));
+  res.json(ListMeasurementsResponse.parse(rows.map(serializeMeasurement)));
 });
 
 // POST /documents/:documentId/measurements
@@ -46,6 +59,7 @@ router.post("/documents/:documentId/measurements", async (req, res): Promise<voi
     pageNumber: body.data.pageNumber,
     type: body.data.type,
     label: body.data.label,
+    valueLabel: body.data.valueLabel,
     realWorldValue: body.data.realWorldValue,
     unit: body.data.unit,
     points: body.data.points,
@@ -59,21 +73,11 @@ router.post("/documents/:documentId/measurements", async (req, res): Promise<voi
     const [existing] = await db.select().from(measurementsTable)
       .where(eq(measurementsTable.id, body.data.id));
     if (!existing) { res.status(409).json({ error: "Conflict" }); return; }
-    res.status(200).json(CreateMeasurementResponse.parse({
-      ...existing,
-      points: existing.points as Array<Record<string, unknown>>,
-      fabricData: existing.fabricData as Record<string, unknown>,
-      createdAt: existing.createdAt.toISOString(),
-    }));
+    res.status(200).json(CreateMeasurementResponse.parse(serializeMeasurement(existing)));
     return;
   }
 
-  res.status(201).json(CreateMeasurementResponse.parse({
-    ...row,
-    points: row.points as Array<Record<string, unknown>>,
-    fabricData: row.fabricData as Record<string, unknown>,
-    createdAt: row.createdAt.toISOString(),
-  }));
+  res.status(201).json(CreateMeasurementResponse.parse(serializeMeasurement(row)));
 });
 
 // PUT /documents/:documentId/measurements/:measurementId
@@ -96,12 +100,7 @@ router.put("/documents/:documentId/measurements/:measurementId", async (req, res
 
   if (!row) { res.status(404).json({ error: "Measurement not found" }); return; }
 
-  res.json(UpdateMeasurementResponse.parse({
-    ...row,
-    points: row.points as Array<Record<string, unknown>>,
-    fabricData: row.fabricData as Record<string, unknown>,
-    createdAt: row.createdAt.toISOString(),
-  }));
+  res.json(UpdateMeasurementResponse.parse(serializeMeasurement(row)));
 });
 
 // DELETE /documents/:documentId/measurements/:measurementId

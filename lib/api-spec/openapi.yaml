@@ -398,6 +398,8 @@ components:
           enum: [distance, area]
         label:
           type: string
+        valueLabel:
+          type: string
         realWorldValue:
           type: number
         unit:
@@ -412,7 +414,7 @@ components:
           additionalProperties: true
         createdAt:
           type: string
-      required: [id, documentId, pageNumber, type, label, realWorldValue, unit, points, fabricData, createdAt]
+      required: [id, documentId, pageNumber, type, label, valueLabel, realWorldValue, unit, points, fabricData, createdAt]
 
     MeasurementInput:
       type: object
@@ -426,6 +428,8 @@ components:
           enum: [distance, area]
         label:
           type: string
+        valueLabel:
+          type: string
         realWorldValue:
           type: number
         unit:
@@ -438,12 +442,14 @@ components:
         fabricData:
           type: object
           additionalProperties: true
-      required: [id, pageNumber, type, label, realWorldValue, unit, points, fabricData]
+      required: [id, pageNumber, type, label, valueLabel, realWorldValue, unit, points, fabricData]
 
     MeasurementUpdateInput:
       type: object
       properties:
         label:
+          type: string
+        valueLabel:
           type: string
         realWorldValue:
           type: number
@@ -452,7 +458,7 @@ components:
         fabricData:
           type: object
           additionalProperties: true
-      required: [label, realWorldValue, unit]
+      required: [label, valueLabel, realWorldValue, unit]
 
     Share:
       type: object

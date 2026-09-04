@@ -1,12 +1,15 @@
 export interface PixelMeasurement {
   id: string;
   type: 'distance' | 'area';
+  label?: string;
+  valueLabel?: string;
   realWorldValue?: number;
   isPending: boolean;
 }
 
 export interface RecalculatedMeasurementValues {
   label: string;
+  valueLabel: string;
   realWorldValue: number;
   unit: string;
 }
@@ -24,7 +27,7 @@ interface RecalculationHandlers {
 }
 
 export function recalculatedMeasurementValues(
-  measurement: Pick<PixelMeasurement, 'type' | 'realWorldValue'>,
+  measurement: Pick<PixelMeasurement, 'type' | 'label' | 'valueLabel' | 'realWorldValue'>,
   pixelsPerUnit: number,
   realWorldUnit: string,
 ): RecalculatedMeasurementValues {
@@ -32,11 +35,15 @@ export function recalculatedMeasurementValues(
   const scaleFactor = isArea ? pixelsPerUnit * pixelsPerUnit : pixelsPerUnit;
   const realWorldValue = (measurement.realWorldValue ?? 0) / scaleFactor;
   const unit = isArea ? `${realWorldUnit}²` : realWorldUnit;
+  const valueLabel = `${realWorldValue < 10 ? realWorldValue.toFixed(2) : realWorldValue.toFixed(1)} ${unit}`;
 
   return {
     realWorldValue,
     unit,
-    label: `${realWorldValue < 10 ? realWorldValue.toFixed(2) : realWorldValue.toFixed(1)} ${unit}`,
+    label: measurement.label && measurement.label !== measurement.valueLabel
+      ? measurement.label
+      : valueLabel,
+    valueLabel,
   };
 }
 
