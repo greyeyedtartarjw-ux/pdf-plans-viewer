@@ -5,8 +5,14 @@ import { Toolbar } from './Toolbar';
 import { Sidebar } from './Sidebar';
 import EmptyState from './EmptyState';
 import { getDocumentContentHash, getLegacyDocumentKey } from '../lib/documentIdentity';
-import { exportMeasurementsCSV, exportBackupJSON } from '../lib/exportUtils';
+import {
+  BackupValidationError,
+  exportMeasurementsCSV,
+  exportBackupJSON,
+  parseBackupJSON,
+} from '../lib/exportUtils';
 import { mergePendingState } from '../lib/pendingState';
+import { createBackupRestoreOps } from '../lib/backupRestore';
 import {
   upsertDocument,
   listAnnotations,
@@ -30,6 +36,7 @@ import {
 } from '../lib/measurementUtils';
 import {
   addPendingOp,
+  clearPendingOps,
   getCachedDocumentId,
   getPendingOps,
   countPendingOps,
@@ -115,6 +122,7 @@ export default function Shell() {
   const { pdfDoc, documentId, activeTool } = state;
   const scale = state.scales[state.currentPage] ?? DEFAULT_SCALE;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const backupInputRef = useRef<HTMLInputElement>(null);
   const registeringDocumentRef = useRef(false);
   const loadGenerationRef = useRef(0);
   const latestStateRef = useRef(state);
@@ -525,9 +533,12 @@ export default function Shell() {
     const token = params.get('share');
     if (!token) return;
 
+    const loadGeneration = loadGenerationRef.current;
+    const isCurrent = () => loadGeneration === loadGenerationRef.current;
     dispatch({ type: 'SET_SYNCING', syncing: true });
     getShare(token)
       .then((payload) => {
+        if (!isCurrent()) return;
         dispatch({
           type: 'LOAD_REMOTE_STATE',
           documentId: payload.document.id,
@@ -539,6 +550,7 @@ export default function Shell() {
         setShareMsg(`Shared view loaded for "${payload.document.name}". Open that PDF file to see the drawing.`);
       })
       .catch(() => {
+        if (!isCurrent()) return;
         dispatch({ type: 'SET_SYNCING', syncing: false });
         setShareMsg('Share link is invalid or has expired.');
       });
@@ -661,7 +673,7 @@ export default function Shell() {
   // Recover the last desktop plan before the user has to select it again.
   useEffect(() => {
     const desktop = desktopApi();
-    if (!desktop) return;
+    if (!desktop || new URLSearchParams(window.location.search).has('share')) return;
     const loadGeneration = ++loadGenerationRef.current;
     const isCurrent = () => loadGeneration === loadGenerationRef.current;
     let cancelled = false;
@@ -753,6 +765,7 @@ export default function Shell() {
             pageNumber: measurement.pageNumber,
             type: measurement.type,
             label: measurement.label,
+            valueLabel: measurement.valueLabel,
             realWorldValue: measurement.realWorldValue,
             unit: measurement.unit,
             points: measurement.points,
@@ -872,6 +885,65 @@ export default function Shell() {
     exportBackupJSON(state.annotations, state.measurements, state.scales, state.documentData?.name);
   };
 
+  const handleImportJSON = useCallback(async (file: File) => {
+    if (!state.pdfDoc || !state.documentData || !state.documentId) {
+      alert('Wait for the matching PDF to finish opening before importing its backup.');
+      return;
+    }
+    const expectedDocument = state.documentData;
+    const loadGeneration = ++loadGenerationRef.current;
+    try {
+      const backup = parseBackupJSON(await file.text(), expectedDocument.name, state.totalPages);
+      if (
+        loadGeneration !== loadGenerationRef.current
+        || latestStateRef.current.documentData?.hash !== expectedDocument.hash
+      ) {
+        throw new BackupValidationError('The open PDF changed before the backup finished loading. Please import it again.');
+      }
+      const restoreOps = createBackupRestoreOps(
+        state.documentId,
+        {
+          annotations: state.annotations,
+          measurements: state.measurements,
+          scales: state.scales,
+        },
+        backup,
+        nextPendingSequence,
+      );
+      // Persist the complete restore intent before changing visible state so
+      // offline imports survive reload and replay in causal order.
+      clearPendingOps(state.documentId);
+      for (const operation of restoreOps) addPendingOp(operation);
+      dispatch({
+        type: 'IMPORT_BACKUP_STATE',
+        annotations: backup.annotations,
+        measurements: backup.measurements,
+        scales: backup.scales,
+      });
+      needsRemoteHydrationRef.current = false;
+      setPendingCount(restoreOps.length);
+      if (!serverUnreachable) {
+        void flushLocalPendingQueue(state.documentId).catch((error) => {
+          console.error('Could not sync restored backup', error);
+        });
+      }
+      setShareMsg(`Backup restored from ${new Date(backup.exportedAt).toLocaleString()}.`);
+    } catch (error) {
+      alert(error instanceof BackupValidationError ? error.message : 'The backup could not be read.');
+    }
+  }, [
+    dispatch,
+    flushLocalPendingQueue,
+    serverUnreachable,
+    state.annotations,
+    state.documentData,
+    state.documentId,
+    state.measurements,
+    state.pdfDoc,
+    state.scales,
+    state.totalPages,
+  ]);
+
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     const handleGlobalKey = (e: KeyboardEvent) => {
@@ -905,6 +977,17 @@ export default function Shell() {
           if (e.target.files && e.target.files[0]) handleFileSelect(e.target.files[0]);
         }}
       />
+      <input
+        type="file"
+        accept="application/json,.json"
+        ref={backupInputRef}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (file) void handleImportJSON(file);
+        }}
+      />
 
       <Toolbar
         onOpenClick={handleOpenClick}
@@ -913,6 +996,7 @@ export default function Shell() {
         onSetScale={handleSetScale}
         onExportCSV={handleExportCSV}
         onExportJSON={handleExportJSON}
+        onImportJSON={() => backupInputRef.current?.click()}
       />
 
       <div className="flex-1 flex overflow-hidden relative">

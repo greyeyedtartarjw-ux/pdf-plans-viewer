@@ -59,6 +59,12 @@ type Action =
   | { type: 'SET_SERVER_UNREACHABLE'; unreachable: boolean }
   | { type: 'SET_SAVE_STATUS'; status: 'idle' | 'saving' | 'saved' | 'failed' }
   | {
+      type: 'IMPORT_BACKUP_STATE';
+      annotations: Record<number, Annotation[]>;
+      measurements: Record<number, Measurement[]>;
+      scales: Record<number, Scale>;
+    }
+  | {
       type: 'LOAD_REMOTE_STATE';
       documentId: number;
       annotations: Record<number, Annotation[]>;
@@ -235,6 +241,18 @@ function reducer(state: ViewerState, action: Action): ViewerState {
       return { ...state, serverUnreachable: action.unreachable };
     case 'SET_SAVE_STATUS':
       return { ...state, saveStatus: action.status };
+    case 'IMPORT_BACKUP_STATE': {
+      const allIds = Object.values(action.measurements).flatMap(ms => ms.map(m => m.id));
+      return {
+        ...state,
+        annotations: action.annotations,
+        measurements: action.measurements,
+        scales: action.scales,
+        measurementOrder: allIds,
+        activeTool: 'pan',
+        remoteStateRevision: state.remoteStateRevision + 1,
+      };
+    }
     case 'LOAD_REMOTE_STATE': {
       const allIds = Object.values(action.measurements).flatMap(ms => ms.map(m => m.id));
       return {

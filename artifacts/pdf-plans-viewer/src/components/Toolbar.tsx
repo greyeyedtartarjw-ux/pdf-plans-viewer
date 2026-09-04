@@ -56,7 +56,7 @@ const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
   { id: 'text', icon: Type, label: 'Text' },
 ];
 
-export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExportCSV, onExportJSON }: ToolbarProps) {
+export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExportCSV, onExportJSON, onImportJSON }: ToolbarProps) {
   const { state, dispatch } = useViewerContext();
   const {
     zoom,
@@ -312,10 +312,22 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExport
                 <Download size={18} />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
+            <DropdownMenuContent align="end" className="w-60">
               <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                Export backup
+                Backup
               </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={onImportJSON}
+                disabled={!documentId}
+                className="gap-2 cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Upload size={15} className="shrink-0" />
+                <div>
+                  <div className="font-medium">Import backup JSON</div>
+                  <div className="text-xs text-muted-foreground">Restore the open PDF's saved work</div>
+                </div>
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={onExportCSV}
