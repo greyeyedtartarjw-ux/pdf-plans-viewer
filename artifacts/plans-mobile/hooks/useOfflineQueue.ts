@@ -24,6 +24,7 @@ export function useOfflineQueue() {
     import('@/lib/offlineQueue').PendingMeasurement[]
   >([]);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
   const syncingRef = useRef(false);
 
   // ── flush all pending items to the API ───────────────────────────────────
@@ -73,10 +74,14 @@ export function useOfflineQueue() {
     });
   }, [flush]);
 
-  // Subscribe to network — flush when online
+  // Subscribe to network — expose status and flush when online.
   useEffect(() => {
     const unsub = NetInfo.addEventListener((state) => {
-      if (state.isConnected && state.isInternetReachable !== false) {
+      const nextIsOnline =
+        state.isConnected === true && state.isInternetReachable !== false;
+      setIsOnline(nextIsOnline);
+
+      if (nextIsOnline) {
         loadQueue().then((q) => flush(q));
       }
     });
@@ -104,5 +109,13 @@ export function useOfflineQueue() {
     [pendingQueue],
   );
 
-  return { pendingQueue, pendingForDoc, isSyncing, enqueue, dequeue, flush };
+  return {
+    pendingQueue,
+    pendingForDoc,
+    isSyncing,
+    isOnline,
+    enqueue,
+    dequeue,
+    flush,
+  };
 }

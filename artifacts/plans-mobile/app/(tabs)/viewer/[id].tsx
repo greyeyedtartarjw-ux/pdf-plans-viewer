@@ -142,7 +142,8 @@ export default function ViewerScreen() {
   const queryClient = useQueryClient();
 
   // Offline queue
-  const { pendingForDoc, isSyncing, enqueue, dequeue, flush } = useOfflineQueue();
+  const { pendingForDoc, isSyncing, isOnline, enqueue, dequeue, flush } =
+    useOfflineQueue();
 
   // WebView stored in state so React re-renders when the dynamic import resolves
   const webViewRef = useRef<any>(null);
@@ -844,6 +845,22 @@ export default function ViewerScreen() {
           {doc?.name ?? 'Loading…'}
         </Text>
 
+        {!isOnline && (
+          <View
+            style={styles.offlineChip}
+            accessibilityRole="text"
+            accessibilityLabel="Device is offline"
+            testID="offline-status-chip"
+          >
+            <Ionicons
+              name="cloud-offline-outline"
+              size={13}
+              color={colors.destructiveForeground}
+            />
+            <Text style={styles.offlineChipText}>Offline</Text>
+          </View>
+        )}
+
         {/* Page navigation */}
         <View style={styles.pageNav}>
           <TouchableOpacity
@@ -1320,6 +1337,21 @@ function makeStyles(colors: ReturnType<typeof useColors>) {
       fontSize: 15,
       fontWeight: '600' as const,
       color: colors.foreground,
+      fontFamily: 'Inter_600SemiBold',
+    },
+    offlineChip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingVertical: 4,
+      borderRadius: colors.radius,
+      backgroundColor: colors.destructive,
+    },
+    offlineChipText: {
+      fontSize: 11,
+      fontWeight: '600' as const,
+      color: colors.destructiveForeground,
       fontFamily: 'Inter_600SemiBold',
     },
     pageNav: {
