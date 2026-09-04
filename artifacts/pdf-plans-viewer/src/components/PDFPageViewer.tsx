@@ -493,6 +493,114 @@ export default function PDFPageViewer() {
     canvas.renderAll();
   }, []);
 
+  const closeAreaShape = useCallback(() => {
+    if (!fCanvas || activeTool !== 'measure-area' || !isDrawing.current) return;
+
+    const pts = deduplicatePoints(points.current);
+    if (pts.length < 3) {
+      showAreaHint('Need at least 3 distinct points to measure an area — keep clicking to add more.');
+      return;
+    }
+
+    areaPreviewLines.current.forEach(l => fCanvas.remove(l));
+    areaPreviewLines.current = [];
+    if (areaLivePreview.current) {
+      fCanvas.remove(areaLivePreview.current);
+      areaLivePreview.current = null;
+    }
+    if (areaLiveLabel.current) {
+      fCanvas.remove(areaLiveLabel.current);
+      areaLiveLabel.current = null;
+    }
+    if (snapRing.current) {
+      fCanvas.remove(snapRing.current);
+      snapRing.current = null;
+    }
+    isSnapping.current = false;
+    fCanvas.setCursor('crosshair');
+
+    const pxArea = calculateArea(pts);
+    const mData = formatMeasurement(pxArea / Math.pow(zoom, 2), scale, true);
+    const cx = pts.reduce((sum, point) => sum + point.x, 0) / pts.length;
+    const cy = pts.reduce((sum, point) => sum + point.y, 0) / pts.length;
+
+    const polygon = new fabric.Polygon(pts.map(point => ({ x: point.x, y: point.y })), {
+      fill: 'rgba(59, 130, 246, 0.15)',
+      stroke: THEME.colors.measurement.line,
+      strokeWidth: 2 / zoom,
+      selectable: false,
+      evented: false,
+    });
+    const label = new fabric.Text(mData.label, {
+      left: cx,
+      top: cy,
+      fontSize: 14 / zoom,
+      fontFamily: 'monospace',
+      fill: THEME.colors.measurement.text,
+      backgroundColor: 'white',
+      originX: 'center',
+      originY: 'center',
+      selectable: false,
+    });
+    const group = new fabric.Group([polygon, label], { selectable: false });
+    fCanvas.add(group);
+
+    const id = generateId();
+    group.set('id', id as any);
+    group.set('viewerZoom', zoom as any);
+    const measurement = {
+      id,
+      pageNumber: currentPage,
+      type: 'area' as const,
+      label: mData.label,
+      valueLabel: mData.label,
+      realWorldValue: mData.value,
+      unit: mData.unit,
+      points: pts,
+      data: group.toObject(['id', 'viewerZoom'] as any),
+    };
+    dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
+
+    if (documentId) {
+      const areaFabricData = group.toObject(['id', 'viewerZoom'] as any) as unknown as Record<string, unknown>;
+      void saveWithRetry(
+        () => createMeasurement(documentId, {
+          id,
+          pageNumber: currentPage,
+          type: 'area',
+          label: mData.label,
+          valueLabel: mData.label,
+          realWorldValue: mData.value,
+          unit: mData.unit,
+          points: pts,
+          fabricData: areaFabricData,
+        }),
+        'Measurement not saved',
+        {
+          opType: 'create_measurement',
+          documentId,
+          id,
+          pageNumber: currentPage,
+          type: 'area',
+          label: mData.label,
+          valueLabel: mData.label,
+          realWorldValue: mData.value,
+          unit: mData.unit,
+          points: pts,
+          fabricData: areaFabricData,
+          timestamp: Date.now(),
+          sequence: nextPendingSequence(),
+        },
+      );
+    }
+
+    isDrawing.current = false;
+    setIsAreaDrawingActive(false);
+    points.current = [];
+    currentShape.current = null;
+    fCanvas.renderAll();
+  }, [activeTool, currentPage, dispatch, documentId, fCanvas, saveWithRetry, scale, showAreaHint, zoom]);
+
   // 1. Render PDF Page
   useEffect(() => {
     let mounted = true;
@@ -1100,124 +1208,12 @@ export default function PDFPageViewer() {
       }
     };
 
-    const handleDblClick = (o: fabric.TEvent) => {
-      if (activeTool !== 'measure-area' || !isDrawing.current) return;
-
+    const handleDblClick = () => {
       // A dblclick fires two mousedown events at the (approximately) same position
       // before the dblclick event itself. Deduplicate consecutive near-identical
       // points so closing works correctly regardless of exact event timing or
       // pointer behavior.
-      const pts = deduplicatePoints(points.current);
-      if (pts.length < 3) {
-        showAreaHint('Need at least 3 distinct points to measure an area — keep clicking to add more.');
-        return;
-      }
-
-      // Clear all preview objects
-      areaPreviewLines.current.forEach(l => fCanvas.remove(l));
-      areaPreviewLines.current = [];
-      if (areaLivePreview.current) {
-        fCanvas.remove(areaLivePreview.current);
-        areaLivePreview.current = null;
-      }
-      if (areaLiveLabel.current) {
-        fCanvas.remove(areaLiveLabel.current);
-        areaLiveLabel.current = null;
-      }
-      if (snapRing.current) {
-        fCanvas.remove(snapRing.current);
-        snapRing.current = null;
-      }
-      isSnapping.current = false;
-      fCanvas.setCursor('crosshair');
-
-      // Compute area in pixel² (canvas coords, already at zoom scale)
-      const pxArea = calculateArea(pts);
-      const mData = formatMeasurement(pxArea / Math.pow(zoom, 2), scale, true);
-
-      // Centroid for the label
-      const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-      const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-
-      const polygon = new fabric.Polygon(pts.map(p => ({ x: p.x, y: p.y })), {
-        fill: 'rgba(59, 130, 246, 0.15)',
-        stroke: THEME.colors.measurement.line,
-        strokeWidth: 2 / zoom,
-        selectable: false,
-        evented: false,
-      });
-
-      const label = new fabric.Text(mData.label, {
-        left: cx,
-        top: cy,
-        fontSize: 14 / zoom,
-        fontFamily: 'monospace',
-        fill: THEME.colors.measurement.text,
-        backgroundColor: 'white',
-        originX: 'center',
-        originY: 'center',
-        selectable: false,
-      });
-
-      const group = new fabric.Group([polygon, label], { selectable: false });
-      fCanvas.add(group);
-
-      const id = generateId();
-      group.set('id', id as any);
-      group.set('viewerZoom', zoom as any);
-
-      const measurement = {
-        id,
-        pageNumber: currentPage,
-        type: 'area' as const,
-        label: mData.label,
-        valueLabel: mData.label,
-        realWorldValue: mData.value,
-        unit: mData.unit,
-        points: pts,
-        data: group.toObject(['id', 'viewerZoom'] as any),
-      };
-      dispatch({ type: 'ADD_MEASUREMENT', page: currentPage, measurement });
-
-      if (documentId) {
-        const areaFabricData = group.toObject(['id', 'viewerZoom'] as any) as unknown as Record<string, unknown>;
-        saveWithRetry(
-          () => createMeasurement(documentId, {
-            id,
-            pageNumber: currentPage,
-            type: 'area',
-            label: mData.label,
-            valueLabel: mData.label,
-            realWorldValue: mData.value,
-            unit: mData.unit,
-            points: pts,
-            fabricData: areaFabricData,
-          }),
-          'Measurement not saved',
-          {
-            opType: 'create_measurement',
-            documentId,
-            id,
-            pageNumber: currentPage,
-            type: 'area',
-            label: mData.label,
-            valueLabel: mData.label,
-            realWorldValue: mData.value,
-            unit: mData.unit,
-            points: pts,
-            fabricData: areaFabricData,
-            timestamp: Date.now(),
-            sequence: nextPendingSequence(),
-          },
-        );
-      }
-
-      // Reset area drawing state
-      isDrawing.current = false;
-      setIsAreaDrawingActive(false);
-      points.current = [];
-      currentShape.current = null;
-      fCanvas.renderAll();
+      closeAreaShape();
     };
 
     fCanvas.on('mouse:down', handleMouseDown);
@@ -1244,7 +1240,7 @@ export default function PDFPageViewer() {
       window.removeEventListener('pointercancel', endPan, true);
       window.removeEventListener('blur', endPan);
     };
-  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing, saveWithRetry, isTouchDevice]);
+  }, [fCanvas, activeTool, zoom, scale, highlightColor, currentPage, dispatch, documentId, deduplicatePoints, showAreaHint, cancelAreaDrawing, closeAreaShape, saveWithRetry, isTouchDevice]);
 
   // Keep wheel zoom local to the plan and restore the same PDF coordinate
   // beneath the cursor after the asynchronous PDF/Fabric re-render completes.
@@ -1445,14 +1441,23 @@ export default function PDFPageViewer() {
         </div>
       )}
       {isTouchDevice && isAreaDrawingActive && (
-        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 flex gap-2">
+        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-20 flex flex-wrap justify-center gap-2">
           <button
+            type="button"
+            onPointerDown={(e) => { e.stopPropagation(); closeAreaShape(); }}
+            className="bg-primary border border-primary text-primary-foreground text-sm font-medium px-4 py-2 rounded-md shadow-lg backdrop-blur-sm active:opacity-90 touch-manipulation"
+          >
+            ✓ Close shape
+          </button>
+          <button
+            type="button"
             onPointerDown={(e) => { e.stopPropagation(); undoLastAreaPoint(); }}
             className="bg-card/95 border border-border text-foreground text-sm font-medium px-4 py-2 rounded-md shadow-lg backdrop-blur-sm active:bg-muted touch-manipulation"
           >
             ↩ Undo point
           </button>
           <button
+            type="button"
             onPointerDown={(e) => { e.stopPropagation(); cancelActiveAreaDrawing(); }}
             className="bg-destructive/90 border border-destructive text-destructive-foreground text-sm font-medium px-4 py-2 rounded-md shadow-lg backdrop-blur-sm active:bg-destructive touch-manipulation"
           >
