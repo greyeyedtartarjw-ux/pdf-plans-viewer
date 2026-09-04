@@ -5,3 +5,4 @@
 - [Playwright WebKit on Nix](playwright-webkit-nix.md) — WebKit needs Nix runtime library paths; validate a real render, not its Ubuntu dependency probe.
 - [Page-scale schema migrations](page-scale-schema-migrations.md) — backfill legacy rows before making page keys non-null and composite.
 - [Desktop build isolation](desktop-build-isolation.md) — desktop packaging must not consume the web workflow's concurrently rewritten output directory.
+- [GitHub workflow writes](github-workflow-writes.md) — connector API may block Actions workflow paths; required checks can still be configured, but source sync needs Git transport.
