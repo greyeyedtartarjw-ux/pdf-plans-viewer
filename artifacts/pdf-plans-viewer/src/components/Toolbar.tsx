@@ -58,8 +58,25 @@ const tools: { id: Tool; icon: LucideIcon; label: string }[] = [
 
 export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExportCSV, onExportJSON }: ToolbarProps) {
   const { state, dispatch } = useViewerContext();
-  const { zoom, activeTool, currentPage, totalPages, highlightColor, documentId, saveStatus } = state;
+  const {
+    zoom,
+    activeTool,
+    currentPage,
+    totalPages,
+    highlightColor,
+    documentId,
+    saveStatus,
+    pdfDoc,
+    annotations,
+    measurements,
+    scales,
+  } = state;
   const currentScale = state.scales[currentPage];
+  const hasMeasurements = Object.values(measurements).some(pageMeasurements => pageMeasurements.length > 0);
+  const hasDocument = pdfDoc !== null;
+  const hasAnnotations = Object.values(annotations).some(pageAnnotations => pageAnnotations.length > 0);
+  const hasScale = Object.values(scales).some(scale => scale.set);
+  const hasBackupContent = hasAnnotations || hasMeasurements || hasScale;
 
   const [shareState, setShareState] = useState<'idle' | 'copying' | 'copied'>('idle');
 
@@ -300,18 +317,34 @@ export function Toolbar({ onOpenClick, onSnapshot, onPrint, onSetScale, onExport
                 Export backup
               </div>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={onExportCSV} className="gap-2 cursor-pointer">
+              <DropdownMenuItem
+                onClick={onExportCSV}
+                disabled={!hasMeasurements}
+                className="gap-2 cursor-pointer disabled:cursor-not-allowed"
+              >
                 <FileText size={15} className="shrink-0" />
                 <div>
                   <div className="font-medium">Measurements CSV</div>
-                  <div className="text-xs text-muted-foreground">All pages, all measurements</div>
+                  <div className="text-xs text-muted-foreground">
+                    {hasMeasurements ? 'All pages, all measurements' : 'Add a measurement to export CSV'}
+                  </div>
                 </div>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={onExportJSON} className="gap-2 cursor-pointer">
+              <DropdownMenuItem
+                onClick={onExportJSON}
+                disabled={!hasDocument || !hasBackupContent}
+                className="gap-2 cursor-pointer disabled:cursor-not-allowed"
+              >
                 <Braces size={15} className="shrink-0" />
                 <div>
                   <div className="font-medium">Full backup JSON</div>
-                  <div className="text-xs text-muted-foreground">Annotations + measurements + scale</div>
+                  <div className="text-xs text-muted-foreground">
+                    {!hasDocument
+                      ? 'Open a PDF to export a backup'
+                      : hasBackupContent
+                      ? 'Annotations + measurements + scale'
+                      : 'Add an annotation, measurement, or scale first'}
+                  </div>
                 </div>
               </DropdownMenuItem>
             </DropdownMenuContent>
