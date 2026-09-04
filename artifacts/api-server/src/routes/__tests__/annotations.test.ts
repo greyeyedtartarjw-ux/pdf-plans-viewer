@@ -93,4 +93,41 @@ describe("POST /api/documents/:documentId/annotations — idempotent create", ()
 
     expect(rows).toHaveLength(1);
   });
+
+  it("creates a fresh record when an id is re-POSTed after a genuine delete", async () => {
+    const id = randomUUID();
+    const original = sampleAnnotation(id);
+
+    await request(app)
+      .post(`/api/documents/${documentId}/annotations`)
+      .send(original)
+      .expect(201);
+
+    await request(app)
+      .delete(`/api/documents/${documentId}/annotations/${id}`)
+      .expect(204);
+
+    const replacement = {
+      ...original,
+      fabricData: { type: "Circle", left: 30, top: 40, radius: 12 },
+    };
+    const res = await request(app)
+      .post(`/api/documents/${documentId}/annotations`)
+      .send(replacement)
+      .expect(201);
+
+    expect(res.body).toMatchObject({
+      id,
+      documentId,
+      fabricData: replacement.fabricData,
+    });
+
+    const rows = await db
+      .select()
+      .from(annotationsTable)
+      .where(eq(annotationsTable.id, id));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.fabricData).toEqual(replacement.fabricData);
+  });
 });

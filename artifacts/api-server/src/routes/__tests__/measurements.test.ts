@@ -99,6 +99,48 @@ describe("POST /api/documents/:documentId/measurements — idempotent create", (
 
     expect(rows).toHaveLength(1);
   });
+
+  it("creates a fresh record when an id is re-POSTed after a genuine delete", async () => {
+    const id = randomUUID();
+    const original = sampleMeasurement(id, documentId);
+
+    await request(app)
+      .post(`/api/documents/${documentId}/measurements`)
+      .send(original)
+      .expect(201);
+
+    await request(app)
+      .delete(`/api/documents/${documentId}/measurements/${id}`)
+      .expect(204);
+
+    const replacement = {
+      ...original,
+      label: "Replacement wall",
+      realWorldValue: 8,
+    };
+    const res = await request(app)
+      .post(`/api/documents/${documentId}/measurements`)
+      .send(replacement)
+      .expect(201);
+
+    expect(res.body).toMatchObject({
+      id,
+      documentId,
+      label: "Replacement wall",
+      realWorldValue: 8,
+    });
+
+    const rows = await db
+      .select()
+      .from(measurementsTable)
+      .where(eq(measurementsTable.id, id));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      label: "Replacement wall",
+      realWorldValue: 8,
+    });
+  });
 });
 
 describe("PUT /api/documents/:documentId/measurements/:measurementId", () => {
