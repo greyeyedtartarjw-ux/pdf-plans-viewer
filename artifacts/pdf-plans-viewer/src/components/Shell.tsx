@@ -1,4 +1,5 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useReducer } from 'react';
+import { flushSync } from 'react-dom';
 import { useViewerContext } from '../store/ViewerContext';
 import { Toolbar } from './Toolbar';
 import { Sidebar } from './Sidebar';
@@ -37,8 +38,14 @@ import {
   QUEUE_CHANGED_EVENT,
   removeCachedDocumentId,
   setCachedDocumentId,
+  restorePendingOps,
   type PendingOp,
 } from '../lib/pendingQueue';
+import { bytesToPdfFile, desktopApi, type DesktopSnapshot } from '../lib/desktopBridge';
+import {
+  desktopRecoveryReducer,
+  initialDesktopRecoveryState,
+} from '../lib/desktopRecoveryState';
 import {
   Dialog,
   DialogContent,
@@ -106,10 +113,20 @@ export default function Shell() {
   const { pdfDoc, documentId, activeTool } = state;
   const scale = state.scales[state.currentPage] ?? DEFAULT_SCALE;
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const registeringDocumentRef = useRef(false);
+  const loadGenerationRef = useRef(0);
+  const latestStateRef = useRef(state);
+  latestStateRef.current = state;
 
   const [showScaleDialog, setShowScaleDialog] = useState(false);
   const [pixelDistanceToScale, setPixelDistanceToScale] = useState<number | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
+  const [isRegisteringOfflinePlan, setIsRegisteringOfflinePlan] = useState(false);
+  const [desktopRecovery, updateDesktopRecovery] = useReducer(
+    desktopRecoveryReducer,
+    initialDesktopRecoveryState,
+  );
+  const desktopRecoveryId = desktopRecovery.committedRecoveryId;
 
   // ── Connectivity check ────────────────────────────────────────────────────
   // Poll the health endpoint every 15 s. Banner is shown while the server is
@@ -354,13 +371,17 @@ export default function Shell() {
   }, [dispatch]);
 
   /** Refresh remote state after an offline reopen, preserving queued local work. */
-  const hydrateRemoteDocument = useCallback(async (docId: number) => {
+  const hydrateRemoteDocument = useCallback(async (
+    docId: number,
+    isCurrent: () => boolean = () => true,
+  ) => {
     const [apiAnnotations, apiMeasurements, apiScales] = await Promise.all([
       listAnnotations(docId),
       listMeasurements(docId),
       listDocumentScales(docId),
     ]);
     const pendingOps = getPendingOps(docId);
+    if (!isCurrent()) return pendingOps.length;
     const remoteScales = mapApiScales(apiScales);
     const merged = mergePendingState(
       mapApiAnnotations(apiAnnotations),
@@ -511,33 +532,55 @@ export default function Shell() {
   }, []);
 
   // ── Load a PDF file ───────────────────────────────────────────────────────
-  const handleFileSelect = useCallback(async (file: File) => {
+  const handleFileSelect = useCallback(async (file: File, stagedRecoveryId?: string) => {
+    const loadGeneration = ++loadGenerationRef.current;
+    const isCurrent = () => loadGeneration === loadGenerationRef.current;
     let resolvedDocumentId: number | null = null;
+    let recoveryId = stagedRecoveryId;
+    registeringDocumentRef.current = true;
+    setIsRegisteringOfflinePlan(true);
+    dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
     try {
+      const desktop = desktopApi();
+      if (desktop) {
+        recoveryId = recoveryId
+          ?? await desktop.stagePdf(new Uint8Array(await file.arrayBuffer()));
+        if (!isCurrent()) return;
+        updateDesktopRecovery({ type: 'stage', recoveryId });
+      }
       // PDF.js is only needed after the user chooses a plan. Keeping it out of
       // the initial route makes the empty viewer responsive on slow connections.
       const { loadPDF } = await import('../lib/pdfUtils');
       const doc = await loadPDF(file);
+      if (!isCurrent()) return;
       const hash = await getDocumentContentHash(file);
+      if (!isCurrent()) return;
       // Name-and-size mappings from older releases can collide across
       // different PDFs, so they are intentionally discarded rather than
       // migrated to the content digest.
       removeCachedDocumentId(getLegacyDocumentKey(file));
       resolvedDocumentId = getCachedDocumentId(hash);
 
-      dispatch({
-        type: 'SET_PDF_DOC',
-        doc,
-        data: { name: file.name, size: file.size, hash },
-        totalPages: doc.numPages,
+      flushSync(() => {
+        dispatch({
+          type: 'SET_PDF_DOC',
+          doc,
+          data: { name: file.name, size: file.size, hash },
+          totalPages: doc.numPages,
+        });
+        if (recoveryId) {
+          updateDesktopRecovery({ type: 'commit', recoveryId });
+        }
       });
 
       // Register (or re-find) the document on the server, then cache that ID
       // against this local PDF hash for a future offline reopen.
       const serverDoc = await upsertDocument({ name: file.name, hash });
+      if (!isCurrent()) return;
       resolvedDocumentId = serverDoc.id;
       setCachedDocumentId(hash, serverDoc.id);
-      const queued = await hydrateRemoteDocument(serverDoc.id);
+      const queued = await hydrateRemoteDocument(serverDoc.id, isCurrent);
+      if (!isCurrent()) return;
 
       // If the server is reachable right now, flush the queue immediately
       // (covers the case where the user reloads after a connectivity gap that
@@ -548,6 +591,10 @@ export default function Shell() {
 
       setShareMsg(null);
     } catch (err) {
+      if (!isCurrent()) return;
+      if (recoveryId) {
+        updateDesktopRecovery({ type: 'abandon', recoveryId });
+      }
       console.error('Error loading PDF', err);
       // If this PDF has previously been registered, restore its pending local
       // work immediately instead of discarding it just because the server is
@@ -563,6 +610,11 @@ export default function Shell() {
         return;
       }
       alert('Failed to load PDF file.');
+    } finally {
+      if (isCurrent()) {
+        registeringDocumentRef.current = false;
+        setIsRegisteringOfflinePlan(false);
+      }
     }
   }, [
     dispatch,
@@ -570,6 +622,206 @@ export default function Shell() {
     hydrateRemoteDocument,
     restoreOfflinePendingState,
     serverUnreachable,
+  ]);
+
+  const handleOpenClick = useCallback(async () => {
+    const desktop = desktopApi();
+    if (!desktop) {
+      fileInputRef.current?.click();
+      return;
+    }
+    try {
+      const selected = await desktop.openPdf();
+      if (selected) {
+        await handleFileSelect(
+          bytesToPdfFile(selected.name, selected.bytes),
+          selected.recoveryId,
+        );
+      }
+    } catch (error) {
+      console.error('Could not open PDF', error);
+      alert(error instanceof Error ? error.message : 'Could not open the selected PDF.');
+    }
+  }, [handleFileSelect]);
+
+  // Recover the last desktop plan before the user has to select it again.
+  useEffect(() => {
+    const desktop = desktopApi();
+    if (!desktop) return;
+    const loadGeneration = ++loadGenerationRef.current;
+    const isCurrent = () => loadGeneration === loadGenerationRef.current;
+    let cancelled = false;
+    void desktop.loadState().then(async (recovered) => {
+      if (!recovered || cancelled || !isCurrent()) return;
+      const snapshot = recovered.state;
+      updateDesktopRecovery({ type: 'commit', recoveryId: snapshot.recoveryId });
+      const file = bytesToPdfFile(snapshot.name, recovered.bytes);
+      const { loadPDF } = await import('../lib/pdfUtils');
+      const doc = await loadPDF(file);
+      if (cancelled || !isCurrent()) return;
+      dispatch({
+        type: 'SET_PDF_DOC',
+        doc,
+        data: { name: snapshot.name, size: snapshot.size, hash: snapshot.hash },
+        totalPages: doc.numPages,
+      });
+      if (snapshot.documentId) {
+        restorePendingOps(snapshot.documentId, snapshot.pendingOps);
+        dispatch({
+          type: 'LOAD_REMOTE_STATE',
+          documentId: snapshot.documentId,
+          annotations: snapshot.annotations,
+          measurements: snapshot.measurements,
+          scales: snapshot.scales,
+        });
+        setPendingCount(snapshot.pendingOps.length);
+        needsRemoteHydrationRef.current = true;
+      } else {
+        dispatch({
+          type: 'LOAD_LOCAL_STATE',
+          annotations: snapshot.annotations,
+          measurements: snapshot.measurements,
+          scales: snapshot.scales,
+        });
+      }
+      setShareMsg('Recovered your last desktop plan and locally saved work.');
+    }).catch((error) => {
+      console.error('Could not recover the last desktop plan', error);
+    });
+    return () => {
+      cancelled = true;
+      if (isCurrent()) loadGenerationRef.current++;
+    };
+  }, [dispatch]);
+
+  // A plan first opened while offline has no server ID yet. Once the API is
+  // reachable, register it and turn its complete local snapshot into ordered
+  // create operations before hydrating and flushing.
+  useEffect(() => {
+    const documentData = state.documentData;
+    if (
+      !serverReachable
+      || !state.pdfDoc
+      || !documentData
+      || documentId
+      || registeringDocumentRef.current
+    ) return;
+
+    registeringDocumentRef.current = true;
+    setIsRegisteringOfflinePlan(true);
+    dispatch({ type: 'SET_ACTIVE_TOOL', tool: 'pan' });
+    const registerAndSync = async () => {
+      try {
+        const serverDoc = await upsertDocument({
+          name: documentData.name,
+          hash: documentData.hash,
+        });
+        setCachedDocumentId(documentData.hash, serverDoc.id);
+        const latestState = latestStateRef.current;
+
+        for (const annotation of Object.values(latestState.annotations).flat()) {
+          addPendingOp({
+            opType: 'create_annotation',
+            documentId: serverDoc.id,
+            id: annotation.id,
+            pageNumber: annotation.pageNumber,
+            type: annotation.type,
+            fabricData: annotation.data,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          });
+        }
+        for (const measurement of Object.values(latestState.measurements).flat()) {
+          addPendingOp({
+            opType: 'create_measurement',
+            documentId: serverDoc.id,
+            id: measurement.id,
+            pageNumber: measurement.pageNumber,
+            type: measurement.type,
+            label: measurement.label,
+            realWorldValue: measurement.realWorldValue,
+            unit: measurement.unit,
+            points: measurement.points,
+            fabricData: measurement.data,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          });
+        }
+        for (const [page, savedScale] of Object.entries(latestState.scales)) {
+          addPendingOp({
+            opType: 'set_scale',
+            documentId: serverDoc.id,
+            id: `scale:${page}`,
+            pageNumber: Number(page),
+            isSet: savedScale.set,
+            pixelsPerUnit: savedScale.pixelsPerUnit,
+            unit: savedScale.unit,
+            realWorldUnit: savedScale.realWorldUnit,
+            scaleKind: savedScale.scaleKind,
+            presetRatio: savedScale.presetRatio,
+            calibrationDistanceFeet: savedScale.calibrationDistanceFeet,
+            timestamp: Date.now(),
+            sequence: nextPendingSequence(),
+          });
+        }
+
+        await hydrateRemoteDocument(serverDoc.id);
+        await flushLocalPendingQueue(serverDoc.id);
+      } catch (error) {
+        console.error('Could not register the offline desktop plan', error);
+        setShareMsg('Your work remains saved locally and will sync when the server is reachable.');
+      } finally {
+        registeringDocumentRef.current = false;
+        setIsRegisteringOfflinePlan(false);
+      }
+    };
+    void registerAndSync();
+  }, [
+    documentId,
+    flushLocalPendingQueue,
+    hydrateRemoteDocument,
+    serverReachable,
+    state.annotations,
+    state.documentData,
+    state.measurements,
+    state.pdfDoc,
+    state.scales,
+  ]);
+
+  // Electron writes snapshots atomically under the OS application-data folder.
+  // Browser builds continue to use their existing localStorage queue.
+  useEffect(() => {
+    const desktop = desktopApi();
+    const documentData = state.documentData;
+    if (!desktop || !desktopRecoveryId || !documentData || !state.pdfDoc) return;
+    const timer = window.setTimeout(() => {
+      const snapshot: DesktopSnapshot = {
+        version: 2,
+        recoveryId: desktopRecoveryId,
+        savedAt: Date.now(),
+        name: documentData.name,
+        hash: documentData.hash,
+        size: documentData.size,
+        documentId,
+        annotations: state.annotations,
+        measurements: state.measurements,
+        scales: state.scales,
+        pendingOps: documentId ? getPendingOps(documentId) : [],
+      };
+      void desktop.saveState(snapshot).catch((error) => {
+        console.error('Could not save desktop recovery state', error);
+      });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [
+    documentId,
+    desktopRecoveryId,
+    pendingCount,
+    state.annotations,
+    state.documentData,
+    state.measurements,
+    state.pdfDoc,
+    state.scales,
   ]);
 
   // ── Snapshot ──────────────────────────────────────────────────────────────
@@ -622,7 +874,14 @@ export default function Shell() {
   }, [dispatch]);
 
   return (
-    <div className="flex flex-col h-screen w-full bg-background overflow-hidden font-sans">
+    <div className="relative flex flex-col h-screen w-full bg-background overflow-hidden font-sans">
+      {isRegisteringOfflinePlan && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/70 backdrop-blur-[1px]">
+          <div className="rounded-md border bg-background px-5 py-3 text-sm font-medium shadow-lg">
+            Connecting this offline plan… Your local work is safe.
+          </div>
+        </div>
+      )}
       <input
         type="file"
         accept="application/pdf"
@@ -634,7 +893,7 @@ export default function Shell() {
       />
 
       <Toolbar
-        onOpenClick={() => fileInputRef.current?.click()}
+        onOpenClick={handleOpenClick}
         onSnapshot={handleSnapshot}
         onPrint={handlePrint}
         onSetScale={handleSetScale}

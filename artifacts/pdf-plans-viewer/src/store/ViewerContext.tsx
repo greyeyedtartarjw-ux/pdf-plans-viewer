@@ -65,6 +65,12 @@ type Action =
       measurements: Record<number, Measurement[]>;
        scales: Record<number, Scale>;
       shareToken?: string;
+    }
+  | {
+      type: 'LOAD_LOCAL_STATE';
+      annotations: Record<number, Annotation[]>;
+      measurements: Record<number, Measurement[]>;
+      scales: Record<number, Scale>;
     };
 
 const initialState: ViewerState = {
@@ -238,6 +244,17 @@ function reducer(state: ViewerState, action: Action): ViewerState {
         scales: action.scales,
         isSyncing: false,
         shareToken: action.shareToken ?? null,
+        measurementOrder: allIds,
+        remoteStateRevision: state.remoteStateRevision + 1,
+      };
+    }
+    case 'LOAD_LOCAL_STATE': {
+      const allIds = Object.values(action.measurements).flatMap(ms => ms.map(m => m.id));
+      return {
+        ...state,
+        annotations: action.annotations,
+        measurements: action.measurements,
+        scales: action.scales,
         measurementOrder: allIds,
         remoteStateRevision: state.remoteStateRevision + 1,
       };

@@ -360,6 +360,20 @@ export function clearPendingOps(documentId: number): void {
   } catch { /* best-effort */ }
 }
 
+/** Restore a native desktop snapshot into the browser queue after relaunch. */
+export function restorePendingOps(documentId: number, ops: PendingOp[]): void {
+  const merged = new Map<string, PendingOp>();
+  for (const op of [...ops, ...getPendingOps(documentId)]) {
+    if (op.documentId !== documentId) continue;
+    const key = `${op.opType}:${op.id}`;
+    const current = merged.get(key);
+    if (!current || comparePendingOps(current, op) < 0) merged.set(key, op);
+  }
+  const ordered = [...merged.values()].sort(comparePendingOps);
+  setPendingOps(documentId, ordered);
+  dispatchQueueChanged(documentId, ordered.length);
+}
+
 export function countPendingOps(documentId: number): number {
   return getPendingOps(documentId).length;
 }

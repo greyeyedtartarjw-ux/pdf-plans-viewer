@@ -1,6 +1,9 @@
 {
   "name": "@workspace/pdf-plans-viewer",
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Offline-capable PDF plan viewing, annotation, and measurement desktop app",
+  "author": "PDF Plans Viewer",
+  "main": "dist/electron/main.js",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,9 +15,12 @@
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "pretypecheck": "pnpm --filter @workspace/api-client-react exec tsc --build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "electron:compile": "tsc --outDir dist/electron --module ESNext --moduleResolution bundler electron/main.ts electron/preload.ts",
-    "electron:dev": "VITE_PORT=20345 electron dist/electron/main.js",
-    "electron:build": "pnpm run build && pnpm run electron:compile && electron-builder --config electron-builder.yml",
+    "electron:compile": "tsc --outDir dist/electron --module NodeNext --moduleResolution NodeNext --target ES2022 --types node,electron --skipLibCheck electron/main.ts electron/preload.ts",
+    "electron:dev": "pnpm run electron:compile && VITE_PORT=20345 electron dist/electron/main.js",
+    "electron:web-build": "DESKTOP_BUILD=1 vite build --config vite.config.ts",
+    "electron:build": "pnpm run electron:web-build && pnpm run electron:compile && electron-builder --config electron-builder.yml",
+    "electron:build:windows": "pnpm run electron:web-build && pnpm run electron:compile && electron-builder --config electron-builder.yml --win --x64",
+    "electron:build:mac": "pnpm run electron:web-build && pnpm run electron:compile && electron-builder --config electron-builder.yml --mac --x64",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts"
   },
@@ -83,6 +89,8 @@
     "vite": "catalog:",
     "vitest": "^4.1.10",
     "wouter": "^3.3.5",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
     "zod": "catalog:"
   },
   "dependencies": {

@@ -1,0 +1,5 @@
+artifacts/pdf-plans-viewer/dist-installer/@workspacepdf-plans-viewer-1.0.0-x64.nsis.7z filter=lfs diff=lfs merge=lfs -text
+artifacts/pdf-plans-viewer/dist-installer/mac/PDF[[:space:]]Plans[[:space:]]Viewer.app/Contents/Frameworks/Electron[[:space:]]Framework.framework/Versions/A/Electron[[:space:]]Framework filter=lfs diff=lfs merge=lfs -text
+artifacts/pdf-plans-viewer/dist-installer/mac/PDF[[:space:]]Plans[[:space:]]Viewer.app/Contents/Resources/app.asar filter=lfs diff=lfs merge=lfs -text
+artifacts/pdf-plans-viewer/dist-installer/win-unpacked/PDF[[:space:]]Plans[[:space:]]Viewer.exe filter=lfs diff=lfs merge=lfs -text
+artifacts/pdf-plans-viewer/dist-installer/win-unpacked/resources/app.asar filter=lfs diff=lfs merge=lfs -text

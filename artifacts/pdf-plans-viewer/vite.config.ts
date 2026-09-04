@@ -21,7 +21,8 @@ export default defineConfig(async ({ command }) => {
     throw new Error(`Invalid PORT value: "${rawPort}"`);
   }
 
-  const basePath = process.env.BASE_PATH ?? (isBuild ? '/' : undefined);
+  const basePath = process.env.BASE_PATH
+    ?? (isBuild ? (process.env.DESKTOP_BUILD === '1' ? './' : '/') : undefined);
 
   if (!basePath) {
     throw new Error(
@@ -63,7 +64,10 @@ export default defineConfig(async ({ command }) => {
     },
     root: path.resolve(import.meta.dirname),
     build: {
-      outDir: path.resolve(import.meta.dirname, 'dist/public'),
+      outDir: path.resolve(
+        import.meta.dirname,
+        process.env.DESKTOP_BUILD === '1' ? 'dist/desktop-public' : 'dist/public',
+      ),
       emptyOutDir: true,
     },
     server: {

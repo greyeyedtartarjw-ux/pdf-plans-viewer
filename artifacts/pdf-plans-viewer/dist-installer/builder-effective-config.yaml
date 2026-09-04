@@ -1,0 +1,35 @@
+directories:
+  output: dist-installer
+  buildResources: electron/assets
+appId: com.pdfplansviewer.desktop
+productName: PDF Plans Viewer
+artifactName: PDF-Plans-Viewer-${version}-${os}-${arch}.${ext}
+copyright: Copyright © 2026 PDF Plans Viewer
+npmRebuild: false
+files:
+  - filter:
+      - dist/electron/**/*
+      - dist/desktop-public/**/*
+      - package.json
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: electron/assets/icon.png
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PDF Plans Viewer
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+  category: public.app-category.productivity
+  icon: electron/assets/icon.png
+  identity: null
+electronVersion: 37.10.3

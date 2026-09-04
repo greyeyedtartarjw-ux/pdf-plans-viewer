@@ -7,6 +7,7 @@ import {
   getPendingOps,
   getPendingScaleUpdate,
   removePendingOp,
+  restorePendingOps,
   setCachedDocumentId,
   type PendingOp,
 } from '../pendingQueue';
@@ -46,6 +47,52 @@ afterEach(() => {
 });
 
 describe('persistent pending-operation queue', () => {
+  it('restores a desktop snapshot queue and preserves its causal order', () => {
+    const documentId = 99;
+    const later: PendingOp = {
+      opType: 'delete_annotation',
+      documentId,
+      id: 'note-a',
+      timestamp: 2,
+      sequence: 2,
+    };
+    const earlier: PendingOp = {
+      opType: 'create_annotation',
+      documentId,
+      id: 'note-a',
+      pageNumber: 1,
+      type: 'text',
+      fabricData: { text: 'Recovered note' },
+      timestamp: 1,
+      sequence: 1,
+    };
+
+    restorePendingOps(documentId, [later, earlier]);
+
+    expect(getPendingOps(documentId)).toEqual([earlier, later]);
+  });
+
+  it('does not let a stale desktop snapshot overwrite a newer browser queue', () => {
+    const documentId = 98;
+    const stale: PendingOp = {
+      opType: 'delete_annotation',
+      documentId,
+      id: 'note-a',
+      timestamp: 1,
+      sequence: 1,
+    };
+    const newer: PendingOp = {
+      ...stale,
+      timestamp: 2,
+      sequence: 2,
+    };
+    addPendingOp(newer);
+
+    restorePendingOps(documentId, [stale]);
+
+    expect(getPendingOps(documentId)).toEqual([newer]);
+  });
+
   it('upgrades a legacy document-wide scale retry to page one before flushing', async () => {
     const documentId = 100;
     localStorage.setItem(`pdf-plans-pending-ops-${documentId}`, JSON.stringify([{

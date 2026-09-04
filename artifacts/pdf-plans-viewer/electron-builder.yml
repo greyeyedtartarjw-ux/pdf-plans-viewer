@@ -2,16 +2,17 @@
 # Run: pnpm run electron:build   (builds Windows installer)
 # Docs: https://www.electron.build/
 
-appId: com.pdfplansviewer.app
+appId: com.pdfplansviewer.desktop
 productName: PDF Plans Viewer
-copyright: Copyright © 2024
+artifactName: PDF-Plans-Viewer-${version}-${os}-${arch}.${ext}
+copyright: Copyright © 2026 PDF Plans Viewer
+npmRebuild: false
 
 # The compiled Electron main + preload go into the dist/electron folder.
 # The Vite-built web files go into dist/public (see vite.config.ts build.outDir).
 files:
   - dist/electron/**/*
-  - dist/public/**/*
-  - node_modules/**/*
+  - dist/desktop-public/**/*
   - package.json
 
 directories:
@@ -23,7 +24,7 @@ win:
   target:
     - target: nsis        # Produces a standard Windows setup.exe
       arch: [x64]
-  icon: electron/assets/icon.ico  # 256x256 .ico (create before building)
+  icon: electron/assets/icon.png
 
 nsis:
   oneClick: false          # Show the installer wizard
@@ -35,10 +36,9 @@ nsis:
 
 # ── macOS (optional) ──────────────────────────────────────────────────────────
 mac:
-  target: dmg
+  target:
+    - target: dmg
+      arch: [x64]
   category: public.app-category.productivity
-
-# ── Linux (optional) ──────────────────────────────────────────────────────────
-linux:
-  target: AppImage
-  category: Office
+  icon: electron/assets/icon.png
+  identity: null

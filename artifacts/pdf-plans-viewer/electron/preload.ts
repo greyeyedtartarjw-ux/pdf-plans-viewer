@@ -5,9 +5,9 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  /** Returns the platform string ("win32", "darwin", "linux") */
   platform: process.platform,
-
-  /** Signals the main process to open the native file-open dialog */
-  openFile: () => ipcRenderer.invoke('open-file'),
+  openPdf: () => ipcRenderer.invoke('desktop:open-pdf'),
+  stagePdf: (bytes: Uint8Array) => ipcRenderer.invoke('desktop:stage-pdf', bytes),
+  saveState: (state: unknown) => ipcRenderer.invoke('desktop:save-state', state),
+  loadState: () => ipcRenderer.invoke('desktop:load-state'),
 });
